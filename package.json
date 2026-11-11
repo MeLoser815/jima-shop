@@ -1,0 +1,27 @@
+{
+  "name": "jima-shop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "即码小店：可爱风商城 + 支付宝当面付（Node 22 + React + pnpm）",
+  "scripts": {
+    "dev": "pnpm -r --parallel --filter @jima/api --filter @jima/web run dev",
+    "dev:api": "pnpm --filter @jima/api dev",
+    "dev:web": "pnpm --filter @jima/web dev",
+    "build": "pnpm --filter @jima/api build && pnpm --filter @jima/web build",
+    "test": "pnpm --filter @jima/api test",
+    "start": "pnpm --filter @jima/api start",
+    "typecheck": "pnpm -r run typecheck",
+    "start:prod": "pnpm build && pnpm --filter @jima/api start",
+    "backup": "pnpm --filter @jima/api backup"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@10.34.6",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
+  }
+}

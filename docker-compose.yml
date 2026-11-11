@@ -1,0 +1,44 @@
+# 即码小店 — 推荐部署文件（官方镜像）
+#
+# 适用于 Docker Compose 与 1Panel「容器 → 编排」：
+# 1. 将本文件内容粘贴为编排配置，并设置编排名称（例如 jima-shop）
+# 2. 在「环境变量」中填写 WEB_ORIGIN、ALIPAY_NOTIFY_URL、SESSION_SECRET、SETTINGS_ENCRYPTION_KEY
+# 3. 可选填写 ADMIN_BASE_PATH（默认 /admin）、JIMA_PORT（默认 3001）
+# 4. 启动后将网站反向代理到该端口，并启用公网 HTTPS
+#
+# 密钥请使用足够长的随机串，例如：openssl rand -hex 32
+# 不要把真实密钥提交到 Git。数据库文件保存在 ./data，请纳入备份。
+
+version: "3.8"
+
+services:
+  jima-shop:
+    image: ghcr.io/meloser815/jima-shop:latest
+    container_name: jima-shop
+    restart: unless-stopped
+    ports:
+      - "${JIMA_PORT:-3001}:3001"
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3001"
+      DATABASE_PATH: /data/jima.db
+      WEB_ORIGIN: ${WEB_ORIGIN}
+      ALIPAY_NOTIFY_URL: ${ALIPAY_NOTIFY_URL}
+      SESSION_SECRET: ${SESSION_SECRET}
+      SETTINGS_ENCRYPTION_KEY: ${SETTINGS_ENCRYPTION_KEY}
+      ADMIN_BASE_PATH: ${ADMIN_BASE_PATH:-/admin}
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 5

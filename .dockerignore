@@ -1,0 +1,57 @@
+.git
+.github
+.gitignore
+
+# 依赖与构建产物（镜像内重新安装 / 构建）
+node_modules
+**/node_modules
+**/dist
+**/.vite
+coverage
+*.tsbuildinfo
+
+# 本地环境与密钥（切勿打进镜像）
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.token
+id_rsa
+id_rsa.pub
+
+# 数据库与备份
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*-wal
+*-shm
+data/*
+!data/.gitkeep
+data/backups/
+
+# 本地截图与文档资源（不参与构建）
+/shots/
+/docs/
+/desktop.png
+/mobile.png
+/palace-desktop.png
+/palace-mobile.png
+README.md
+
+# 测试与编辑器杂项
+**/tests
+**/*.test.ts
+.DS_Store
+Thumbs.db
+.idea
+.vscode
+*.log
+logs/

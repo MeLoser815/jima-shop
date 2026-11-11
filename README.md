@@ -1,48 +1,151 @@
-# 即码小店（jima-shop）
+# 即码小店
 
-可自建部署的开源卡密小店：前台浏览商品、购物车结算，对接 **支付宝当面付** 扫码收款并自动发卡；后台管理商品、分类、订单、卡密货源与风格模板。
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
+[![GitHub stars](https://img.shields.io/github/stars/MeLoser815/jima-shop?style=social)](https://github.com/MeLoser815/jima-shop/stargazers)
 
-数据存储使用 **SQLite**（better-sqlite3，WAL 模式）。典型中小规模自建店只需运行 **单个 API 进程**，不要用 PM2 cluster 或多个进程同时写同一个数据库文件。
+可自建部署的开源卡密商店。顾客在前台浏览商品并完成结算，通过支付宝当面付扫码付款后自动获得卡密；商户在后台管理商品、分类、订单、卡密货源与店铺风格。
 
-本项目以 [MIT](./LICENSE) 许可证开源。
+数据存储使用 SQLite（better-sqlite3，WAL 模式）。标准部署只运行 **一个 API 进程**，由该进程同时提供接口和前端静态资源。请勿对同一数据库文件使用多进程写入，也不要启用 PM2 cluster。
 
-> **重要：** 不要把开发库里的示例商品和 `DEMO-` 演示卡密拿到生产环境去卖，也不要公开发布或部署时附带真实的 `.env`、数据库文件或密钥。上线请使用一份**新的空数据库**，自行创建管理员并导入真实卡密。
+本软件以 [MIT](./LICENSE) 许可证发布。
 
-## 技术栈
+**上线前请使用新的空数据库。** 不要把开发环境中的示例商品或 `DEMO-` 前缀演示卡密用于对外销售；不要将 `.env`、数据库文件或密钥放入公开仓库或镜像。
 
-- TypeScript + **pnpm** workspace
-- Node.js **22+**
-- 后端：Fastify + better-sqlite3 + 官方 `alipay-sdk` + bcryptjs
-- 前端：React + Vite + Ant Design
+## 界面预览
+
+### 店铺前台
+
+![店铺首页](docs/images/storefront-home.png)
+
+![商品详情](docs/images/storefront-product.png)
+
+![订单查询](docs/images/storefront-order-query.png)
+
+### 管理后台
+
+![仪表盘](docs/images/admin-dashboard.png)
+
+![商品管理](docs/images/admin-products.png)
 
 ## 功能
 
 ### 前台
 
-1. 响应式商城（手机底部导航 / 自适应商品栅格）
-2. 商品分类筛选、详情、加购、购物车
-3. 结账时预占卡密，再调用支付宝当面付 `alipay.trade.precreate` 出收款码并轮询
-4. 多套视觉模板（草莓甜心 / 东方巨龙 / 神圣天使 / 次元集市）
-5. 查单：仅已支付订单返回卡密，不含买家账号等敏感字段
+- 响应式店铺：分类筛选、商品详情、购物车与结算
+- 结账时预占卡密，再调用支付宝当面付 `alipay.trade.precreate` 生成收款码并轮询支付结果
+- 可选视觉模板：草莓甜心、东方巨龙、神圣天使、次元集市
+- 订单查询：仅已支付订单返回卡密，不返回买家账号等敏感字段
 
 ### 后台
 
-1. 首次安装自设管理员账号密码（bcrypt，密码至少 8 位）
-2. 仪表盘、商品 CRUD、分类管理、订单、**补发**、操作日志
-3. 风格模板切换（立即作用于前台）
-4. 支付宝收款三要素（密钥 AES 加密入库）
-5. 修改登录密码（会使已有登录全部失效）
-6. 管理员收银台（收款码 / 付款码），**不在前台导航暴露入口**
+- 首次启动时自行设置管理员账号与密码（bcrypt，密码至少 8 位）
+- 仪表盘、商品与分类、订单、待补发订单的补发、操作日志
+- 卡密货源导入（一行一条，或「卡号 + 卡密」）；库存按未用卡密计数
+- 支付宝收款三要素在后台填写，密钥以 AES-GCM 加密入库
+- 修改登录密码会使已有会话全部失效
+- 管理员收银台（收款码 / 付款码）仅在后台提供，不在前台导航中展示入口
 
-## 快速开始（本地开发）
+## 部署（推荐 Docker）
 
-需要 Node.js 22+ 与 [pnpm](https://pnpm.io/)。
+推荐使用 Docker 部署，可直接粘贴到 1Panel 的「容器 → 编排」中启动。镜像发布于 GitHub Container Registry：[`ghcr.io/meloser815/jima-shop`](https://github.com/MeLoser815/jima-shop/pkgs/container/jima-shop)。
+
+启动前请准备：
+
+1. 已解析到服务器的域名，并能为站点启用 HTTPS。生产环境的支付宝异步通知地址必须是公网可访问的 HTTPS URL，否则进程会拒绝启动。
+2. 两枚足够长的随机密钥，分别用于会话签名（`SESSION_SECRET`）和数据加密（`SETTINGS_ENCRYPTION_KEY`）。可用 `openssl rand -hex 32` 各生成一次。`SETTINGS_ENCRYPTION_KEY` 必须长期保管，丢失后将无法解密已存储的支付宝密钥与卡密。
+3. 已签约支付宝「当面付」的应用。AppId、应用私钥、支付宝公钥在后台界面填写，不必写入 Compose。
+
+### 1Panel 编排
+
+1. 打开 1Panel「容器」→「编排」，新建编排并填写名称（例如 `jima-shop`）。
+2. 将下面的 Compose 粘贴到编排内容中。
+3. 在「环境变量」中填写 [环境变量](#环境变量) 一节列出的必填项，不要使用示例域名或空密钥。
+4. 保存并启动。将网站反向代理到容器映射的端口（默认 `3001`），并启用 HTTPS。
+5. 在浏览器访问 `https://你的域名/admin`（若修改了 `ADMIN_BASE_PATH`，则使用相应路径），完成首次管理员创建。随后在后台导入商品与卡密，并配置支付宝收款参数。
+
+```yaml
+version: "3.8"
+
+services:
+  jima-shop:
+    image: ghcr.io/meloser815/jima-shop:latest
+    container_name: jima-shop
+    restart: unless-stopped
+    ports:
+      - "${JIMA_PORT:-3001}:3001"
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3001"
+      DATABASE_PATH: /data/jima.db
+      WEB_ORIGIN: ${WEB_ORIGIN}
+      ALIPAY_NOTIFY_URL: ${ALIPAY_NOTIFY_URL}
+      SESSION_SECRET: ${SESSION_SECRET}
+      SETTINGS_ENCRYPTION_KEY: ${SETTINGS_ENCRYPTION_KEY}
+      ADMIN_BASE_PATH: ${ADMIN_BASE_PATH:-/admin}
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 5
+```
+
+同一份文件位于仓库根目录的 [`docker-compose.yml`](./docker-compose.yml)。数据文件写入编排目录下的 `./data`，请将该目录纳入备份。请保持单个副本运行，不要对同一数据卷做多实例水平扩展。
+
+若暂时无法拉取 GHCR 镜像，可改用仓库中的 [`docker-compose.build.yml`](./docker-compose.build.yml) 从源码构建。
+
+### 环境变量
+
+| 变量 | 必填 | 说明 |
+|------|------|------|
+| `WEB_ORIGIN` | 是 | 站点对外访问的源，须与浏览器地址栏一致，例如 `https://shop.example.com`。用于 CORS。 |
+| `ALIPAY_NOTIFY_URL` | 是 | 支付宝异步通知完整 URL，必须是公网 HTTPS，例如 `https://shop.example.com/api/payment/notify`。不要使用 `localhost`、内网地址或 HTTP。 |
+| `SESSION_SECRET` | 是 | 会话签名密钥。使用足够长的随机串，禁止沿用文档或示例中的占位值。 |
+| `SETTINGS_ENCRYPTION_KEY` | 是 | 用于加密存储支付宝密钥与卡密。使用足够长的随机串，部署后不要更换；更换或丢失后将无法解密已有数据。 |
+| `ADMIN_BASE_PATH` | 否 | 管理后台路径，默认 `/admin`。可改为自定义的单段路径（例如 `/my-admin`）。不要使用 `/api`、`/cart`、`/pay`、`/order`、`/query`、`/cashier` 等前台或接口保留路径。后台入口不会出现在前台导航中，需在浏览器中手动输入。 |
+| `JIMA_PORT` | 否 | 主机映射端口，默认 `3001`。 |
+| `NODE_ENV` | 已在 Compose 中设定 | 必须为 `production`。生产模式不会写入演示数据，并启用启动检查。 |
+| `DATABASE_PATH` | 已在 Compose 中设定 | 容器内数据库路径，默认 `/data/jima.db`，对应主机上的 `./data/jima.db`。应指向新的空库，不要复用开发数据库。 |
+| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 否 | 仅当库中尚无管理员时，可用环境变量自动创建账号（密码至少 8 位）。更推荐首次打开后台时在网页中自行设置，创建后从环境变量中移除密码。 |
+
+生成密钥：
 
 ```bash
-git clone https://github.com/<your-account>/jima-shop.git
+openssl rand -hex 32
+```
+
+命令行使用 Compose 时，可将 [`compose.env.example`](./compose.env.example) 复制为 `.env` 后填写，再执行 `docker compose up -d`。填写后的 `.env` 含有密钥，不要提交到 Git。
+
+### 从源码构建镜像
+
+适用于需要修改代码，或不便拉取 GHCR 镜像的情况。在仓库根目录配置好与上一节相同的环境变量后执行：
+
+```bash
+git clone https://github.com/MeLoser815/jima-shop.git
+cd jima-shop
+cp compose.env.example .env
+# 编辑 .env，填入域名与密钥
+docker compose -f docker-compose.build.yml up --build -d
+```
+
+## 本地开发与非容器部署
+
+需要 Node.js 22 或更高版本，以及 [pnpm](https://pnpm.io/)。
+
+```bash
+git clone https://github.com/MeLoser815/jima-shop.git
 cd jima-shop
 cp .env.example apps/api/.env
-# 开发环境可先沿用示例密钥；上线前必须换成随机串
+# 开发环境可先沿用示例密钥；上线前必须换成随机串，并按「生产部署」一节调整通知地址与 WEB_ORIGIN
 
 pnpm install
 pnpm dev
@@ -52,86 +155,48 @@ pnpm dev
 - 管理后台：http://localhost:5173/admin（默认路径，可用 `ADMIN_BASE_PATH` 修改）
 - API：http://localhost:3001
 
-后台入口**不会**出现在前台导航里，需要手动在浏览器输入地址。真实安全依赖管理员鉴权、会话作废和接口限流，而不是路径本身。
+开发环境默认会写入示例分类、商品和 `DEMO-` 前缀演示卡密。若不需要演示数据，在环境变量中设置 `JIMA_SEED_DEMO=0` 后再以空的 `DATABASE_PATH` 启动。
 
-首次打开后台会进入「首次安装」，自行设置管理员用户名和密码。登录后：
+### 非容器的生产启动
 
-1. 「风格模板」选一套前台皮肤
-2. 「商品分类」维护分类，「商品管理」上架商品
-3. 在商品的「卡密货源」中导入卡密（一行一条；也可「卡号+卡密」）
-4. 「支付宝收款」填写 AppId、应用私钥、支付宝公钥
-
-开发环境默认会写入示例分类、商品和 `DEMO-` 前缀演示卡密。若不想要演示数据，在 `.env` 中设置 `JIMA_SEED_DEMO=0` 后再用空的 `DATABASE_PATH` 启动。
-
-## 配置后台路径
-
-在 `apps/api/.env`（或仓库根目录 `.env`）中设置：
+若不以 Docker 运行，仍须使用新的空数据库，设置强壮的 `SESSION_SECRET` 与 `SETTINGS_ENCRYPTION_KEY`，将 `ALIPAY_NOTIFY_URL` 设为公网 HTTPS，将 `WEB_ORIGIN` 设为站点的 https 源，并设置 `NODE_ENV=production`。在 HTTPS 反代后只运行一个 API 进程：
 
 ```bash
-ADMIN_BASE_PATH=/admin
-```
-
-也可以改成自定义的单段路径（例如 `/my-admin`）。不要使用 `/api`、`/cart`、`/pay`、`/order`、`/query`、`/cashier` 等前台或接口保留路径。前端开发服务器会读取同一份环境文件，无需再单独配置。生产环境下 API 托管前端时会把该路径注入页面，因此更改后重新启动即可（不必为改路径单独重建，但常规上线流程仍建议先 `pnpm build`）。
-
-## 生产部署
-
-上线前请务必做到：
-
-1. 使用 **新的空数据库文件**（不要直接拿开发库上线，里面可能有演示商品和 DEMO 卡密）。
-2. 设置强壮的 `SESSION_SECRET` 与 `SETTINGS_ENCRYPTION_KEY`（禁止使用 `.env.example` 中的占位值；可用足够长的随机串）。
-3. 将 `ALIPAY_NOTIFY_URL` 设为公网可访问的 **HTTPS** 地址（例如 `https://your-domain.com/api/payment/notify`）。localhost 或 HTTP 在生产环境会拒绝启动。
-4. 设置 `WEB_ORIGIN` 为站点的 https 源；生产环境不会再额外放行 localhost。
-5. 按需设置 `ADMIN_BASE_PATH`（默认 `/admin`）。
-6. 设置 `NODE_ENV=production`，在 HTTPS 反代后面**只运行一个** API 进程：
-
-```bash
-# 先准备好 apps/api/.env（或导出等价环境变量）
 pnpm build
 NODE_ENV=production pnpm start
 # 或一次性：
 NODE_ENV=production pnpm start:prod
 ```
 
-生产模式下 API 会托管 `apps/web/dist`，只需把反代指到 API 端口。`pnpm dev` 仍用于本地前后端分离开发。
+生产模式下 API 会托管 `apps/web/dist`，将反代指到 API 端口即可。`ADMIN_BASE_PATH` 会在运行时注入页面；更改路径后重新启动服务。
 
-生产环境 **不会** 自动写入示例商品或演示卡密。首次启动后通过「首次安装」创建管理员，再自行上架商品、导入真实卡密。
+若使用 PM2，请使用 fork 模式且 `instances=1`，不要开启 cluster。
 
-请只运行 **一个** API 进程访问同一 SQLite 文件。若使用 PM2，请用 fork 模式且 `instances=1`，不要开 cluster。
+## 配置与首次使用
 
-**不要**将 `.env`、数据库文件（`*.db`、`*-wal`、`*-shm`）或备份提交到 Git，也不要在公开仓库中放置真实卡密或支付宝密钥。
+环境变量说明见仓库根目录的 [`.env.example`](./.env.example)（本地开发复制为 `apps/api/.env`）以及上文的 Compose 环境变量表。前端开发服务器会读取同一份 `apps/api/.env`（或仓库根目录的 `.env`），`ADMIN_BASE_PATH` 只需配置一处。
 
-## 备份
+后台路径的真实安全依赖管理员鉴权、会话作废和接口限流，而不是路径本身的隐蔽性。
 
-```bash
-pnpm backup
-# 或指定路径：
-pnpm --filter @jima/api backup /safe/path/jima-backup.db
-```
+首次打开后台会进入安装流程，自行设置管理员用户名和密码。登录后建议按以下顺序完成配置：
 
-请使用上述一致性备份（VACUUM / backup API），**不要**在服务运行时直接 `cp` 正在使用的数据库文件。备份包含加密后的密钥和卡密，请按机密保管，建议文件权限 `0600`。
+1. 在「风格模板」中选择前台皮肤
+2. 在「商品分类」与「商品管理」中维护分类并上架商品
+3. 在商品的「卡密货源」中导入卡密
+4. 在「支付宝收款」中填写 AppId、应用私钥和支付宝公钥
 
-## 脚本
+生产镜像与 `NODE_ENV=production` 启动都不会自动写入示例商品或演示卡密。
 
-```bash
-pnpm dev          # 本地前后端同时启动
-pnpm build
-pnpm test
-pnpm typecheck
-pnpm start        # 需先 build；开发配置下不托管前端
-pnpm start:prod   # build 后启动（请配合 NODE_ENV=production 与生产环境变量）
-pnpm backup       # 一致性备份
-```
-
-## 主要页面
+### 主要路径
 
 | 路径 | 说明 |
 |------|------|
-| `/` | 店铺首页（分类筛选 + 主题皮肤） |
+| `/` | 店铺首页 |
 | `/p/:id` | 商品详情 |
 | `/cart` | 购物车 |
 | `/pay` | 确认订单 / 收款码 |
 | `/order`、`/query` | 查单 |
-| `/admin` | 仪表盘（默认后台路径，可用 `ADMIN_BASE_PATH` 修改；前台不展示入口） |
+| `/admin` | 仪表盘（默认后台路径，可用 `ADMIN_BASE_PATH` 修改） |
 | `/admin/products` | 商品管理 / 卡密货源 |
 | `/admin/categories` | 分类管理 |
 | `/admin/orders` | 订单（含补发） |
@@ -141,33 +206,53 @@ pnpm backup       # 一致性备份
 | `/admin/settings` | 支付宝配置 |
 | `/admin/account` | 账号安全 |
 
-## 切换主题
-
-后台 → **风格模板** → 点选「草莓甜心 / 东方巨龙 / 神圣天使 / 次元集市」→ 前台通过 `/api/store/theme` 拉取并应用 CSS 变量与主题专属布局。
-
-## API 增量
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/categories` | 启用中的分类 |
-| GET | `/api/products?categoryId=` | 按分类筛选上架商品 |
-| GET/POST/PUT/DELETE | `/api/admin/categories` | 分类管理 |
-| GET | `/api/store/theme` | 当前主题 + 模板列表 |
-| GET/PUT | `/api/admin/theme` | 后台读写当前主题 |
-| POST | `/api/checkout` | 买家结账（预占卡密后预下单） |
-| GET | `/api/orders/query/:outTradeNo` | 买家查单（仅公开视图） |
-| POST | `/api/admin/orders/:outTradeNo/fulfill` | 待补发订单补发 |
-| GET | `/api/admin/audit` | 操作日志 |
-
 买家支付轮询只走公开查单接口。`/api/payment/precreate`、`/api/payment/pay` 仅管理员可用。
 
-## 说明
+## 备份
 
-- 开发环境首次启动会写入示例分类与商品；主题默认「草莓甜心」。生产环境不会写入演示数据。
-- 正式收款需签约「当面付」，并将 `ALIPAY_NOTIFY_URL` 配到公网 HTTPS。
-- 密钥与卡密使用 `SETTINGS_ENCRYPTION_KEY` AES-GCM 加密；会话用 `SESSION_SECRET` 签名，并绑定服务端会话（改密 / 退出即作废）。
-- 已售或预占卡密的商品不可删除，请下架以保留发货记录。
-- 生产启动检查会拒绝占位密钥，以及非公网 HTTPS 的通知地址。
+Docker 部署时，请备份主机上的 `./data` 目录，同时妥善保管 `SETTINGS_ENCRYPTION_KEY` 与 `SESSION_SECRET`。仅复制数据库文件而没有加密密钥，将无法解密卡密和支付宝配置。
+
+进行一致性备份时，不要在服务运行中直接 `cp` 正在使用的数据库文件。可在容器内调用备份命令，将快照写入数据卷：
+
+```bash
+docker compose exec jima-shop node dist/scripts/backup.js /data/jima-backup.db
+```
+
+非容器部署使用：
+
+```bash
+pnpm backup
+# 或指定路径：
+pnpm --filter @jima/api backup /safe/path/jima-backup.db
+```
+
+备份包含加密后的密钥与卡密，应按机密保管，建议文件权限 `0600`。
+
+## 生产环境注意事项
+
+- 使用新的空数据库上线，不要直接沿用开发库。
+- 生产环境若密钥为占位值，或 `ALIPAY_NOTIFY_URL` 不是公网 HTTPS，进程会拒绝启动。
+- 同一 SQLite 文件只允许一个写入进程。
+- 已售或已预占卡密的商品不可删除，请下架以保留发货记录。
+- 不要将 `.env`、`*.db`（含 `-wal` / `-shm`）或备份提交到 Git。
+
+## 技术栈与常用脚本
+
+TypeScript、pnpm workspace、Node.js 22。后端为 Fastify、better-sqlite3、官方 `alipay-sdk` 与 bcryptjs；前端为 React、Vite 与 Ant Design。
+
+```bash
+pnpm dev          # 本地前后端同时启动
+pnpm build
+pnpm test
+pnpm typecheck
+pnpm start        # 需先 build
+pnpm start:prod   # build 后启动（须配合 NODE_ENV=production 与生产环境变量）
+pnpm backup       # 一致性备份
+```
+
+## Star History
+
+[![Stargazers over time](https://starchart.cc/MeLoser815/jima-shop.svg)](https://starchart.cc/MeLoser815/jima-shop)
 
 ## License
 

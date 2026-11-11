@@ -1,3 +1,7 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { randomBytes } from 'node:crypto';
+
 export const DEV_SESSION_SECRET_FALLBACK = 'change-me-session-secret-please!!';
 export const DEV_ENCRYPTION_KEY_FALLBACK = 'change-me-32-char-secret-key!!';
 
@@ -45,23 +49,86 @@ export function shouldSeedSampleData(
   return true;
 }
 
+const RUNTIME_SECRETS_FILE = '.runtime-secrets';
+
+function parseRuntimeSecretsFile(file: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!fs.existsSync(file)) return out;
+  const raw = fs.readFileSync(file, 'utf8');
+  for (const line of raw.split('\n')) {
+    const t = line.trim();
+    if (!t || t.startsWith('#')) continue;
+    const i = t.indexOf('=');
+    if (i <= 0) continue;
+    out[t.slice(0, i).trim()] = t.slice(i + 1).trim();
+  }
+  return out;
+}
+
+function writeRuntimeSecretsFile(file: string, values: Record<string, string>): void {
+  const body =
+    Object.entries(values)
+      .map(([k, v]) => `${k}=${v}`)
+      .join('\n') + '\n';
+  fs.writeFileSync(file, body, { mode: 0o600 });
+  fs.chmodSync(file, 0o600);
+}
+
+/**
+ * 生产环境若未提供 SESSION_SECRET / SETTINGS_ENCRYPTION_KEY，
+ * 则在数据目录生成并持久化随机密钥，以便 `docker compose up` 无需先填写密钥即可启动。
+ * 已在环境变量中给出的非占位值优先；占位值不会被写入或采用。
+ */
+export function applyPersistedProductionSecrets(
+  dataDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  if ((env.NODE_ENV ?? 'development') !== 'production') return;
+  fs.mkdirSync(dataDir, { recursive: true });
+  const file = path.join(dataDir, RUNTIME_SECRETS_FILE);
+  const stored = parseRuntimeSecretsFile(file);
+  let dirty = false;
+
+  const adopt = (key: 'SESSION_SECRET' | 'SETTINGS_ENCRYPTION_KEY') => {
+    const fromEnv = env[key]?.trim();
+    if (fromEnv && !isInsecureSecret(fromEnv)) {
+      env[key] = fromEnv;
+      return;
+    }
+    const fromFile = stored[key]?.trim();
+    if (fromFile && !isInsecureSecret(fromFile)) {
+      env[key] = fromFile;
+      return;
+    }
+    const generated = randomBytes(32).toString('hex');
+    env[key] = generated;
+    stored[key] = generated;
+    dirty = true;
+  };
+
+  adopt('SESSION_SECRET');
+  adopt('SETTINGS_ENCRYPTION_KEY');
+  if (dirty) writeRuntimeSecretsFile(file, stored);
+}
+
 export function assertProductionConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): void {
   if ((env.NODE_ENV ?? 'development') !== 'production') return;
   if (isInsecureSecret(env.SESSION_SECRET)) {
     throw new Error(
-      '生产环境必须设置 SESSION_SECRET，且不能使用示例占位值。请在环境变量中配置足够长的随机串。',
+      '生产环境的 SESSION_SECRET 不能使用示例占位值。请改用随机串，或删除该变量以便自动生成并写入数据目录。',
     );
   }
   if (isInsecureSecret(env.SETTINGS_ENCRYPTION_KEY)) {
     throw new Error(
-      '生产环境必须设置 SETTINGS_ENCRYPTION_KEY，且不能使用示例占位值。请在环境变量中配置足够长的随机串。',
+      '生产环境的 SETTINGS_ENCRYPTION_KEY 不能使用示例占位值。请改用随机串，或删除该变量以便自动生成并写入数据目录。',
     );
   }
-  if (!isPublicHttpsUrl(env.ALIPAY_NOTIFY_URL)) {
+  const notify = env.ALIPAY_NOTIFY_URL?.trim();
+  if (notify && !isPublicHttpsUrl(notify)) {
     throw new Error(
-      '生产环境 ALIPAY_NOTIFY_URL 必须是公网可访问的 HTTPS 地址（不能使用 localhost 或 HTTP）。',
+      '若设置 ALIPAY_NOTIFY_URL，必须是公网可访问的 HTTPS 地址（不能使用 localhost 或 HTTP）。',
     );
   }
 }

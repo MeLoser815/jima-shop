@@ -61,7 +61,9 @@ async function main() {
 
   const origins =
     config.nodeEnv === 'production'
-      ? [config.webOrigin]
+      ? config.webOrigin
+        ? [config.webOrigin]
+        : true
       : [
           ...new Set([
             config.webOrigin,

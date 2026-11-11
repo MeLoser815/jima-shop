@@ -45,95 +45,36 @@
 - 修改登录密码会使已有会话全部失效
 - 管理员收银台（收款码 / 付款码）仅在后台提供，不在前台导航中展示入口
 
-## 部署（推荐 Docker）
+## 部署
 
-推荐使用 Docker 部署，可直接粘贴到 1Panel 的「容器 → 编排」中启动。镜像发布于 GitHub Container Registry：[`ghcr.io/meloser815/jima-shop`](https://github.com/MeLoser815/jima-shop/pkgs/container/jima-shop)。
-
-启动前请准备：
-
-1. 已解析到服务器的域名，并能为站点启用 HTTPS。生产环境的支付宝异步通知地址必须是公网可访问的 HTTPS URL，否则进程会拒绝启动。
-2. 两枚足够长的随机密钥，分别用于会话签名（`SESSION_SECRET`）和数据加密（`SETTINGS_ENCRYPTION_KEY`）。可用 `openssl rand -hex 32` 各生成一次。`SETTINGS_ENCRYPTION_KEY` 必须长期保管，丢失后将无法解密已存储的支付宝密钥与卡密。
-3. 已签约支付宝「当面付」的应用。AppId、应用私钥、支付宝公钥在后台界面填写，不必写入 Compose。
-
-### 1Panel 编排
-
-1. 打开 1Panel「容器」→「编排」，新建编排并填写名称（例如 `jima-shop`）。
-2. 将下面的 Compose 粘贴到编排内容中。
-3. 在「环境变量」中填写 [环境变量](#环境变量) 一节列出的必填项，不要使用示例域名或空密钥。
-4. 保存并启动。将网站反向代理到容器映射的端口（默认 `3001`），并启用 HTTPS。
-5. 在浏览器访问 `https://你的域名/admin`（若修改了 `ADMIN_BASE_PATH`，则使用相应路径），完成首次管理员创建。随后在后台导入商品与卡密，并配置支付宝收款参数。
+将下列内容保存为 `docker-compose.yml`，在该文件所在目录执行 `docker compose up -d`。也可将同一段配置粘贴到 1Panel「容器 → 编排」，填写名称后启动。
 
 ```yaml
-version: "3.8"
-
 services:
   jima-shop:
     image: ghcr.io/meloser815/jima-shop:latest
     container_name: jima-shop
     restart: unless-stopped
     ports:
-      - "${JIMA_PORT:-3001}:3001"
+      - "3001:3001"
     environment:
-      NODE_ENV: production
-      HOST: 0.0.0.0
-      PORT: "3001"
-      DATABASE_PATH: /data/jima.db
-      WEB_ORIGIN: ${WEB_ORIGIN}
-      ALIPAY_NOTIFY_URL: ${ALIPAY_NOTIFY_URL}
-      SESSION_SECRET: ${SESSION_SECRET}
-      SETTINGS_ENCRYPTION_KEY: ${SETTINGS_ENCRYPTION_KEY}
-      ADMIN_BASE_PATH: ${ADMIN_BASE_PATH:-/admin}
+      - TZ=Asia/Shanghai
+      - NODE_ENV=production
     volumes:
       - ./data:/data
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "fetch('http://127.0.0.1:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
-        ]
-      interval: 30s
-      timeout: 5s
-      start_period: 20s
-      retries: 5
 ```
 
-同一份文件位于仓库根目录的 [`docker-compose.yml`](./docker-compose.yml)。数据文件写入编排目录下的 `./data`，请将该目录纳入备份。请保持单个副本运行，不要对同一数据卷做多实例水平扩展。
+启动后访问 `http://服务器地址:3001` 打开店铺，访问 `http://服务器地址:3001/admin` 创建管理员账号。随后在后台「支付宝收款」中填写 AppId、应用私钥、支付宝公钥，以及公网 HTTPS 异步通知地址（例如 `https://你的域名/api/payment/notify`）。收款相关配置均在后台完成，不必写入 Compose。
 
-若暂时无法拉取 GHCR 镜像，可改用仓库中的 [`docker-compose.build.yml`](./docker-compose.build.yml) 从源码构建。
+数据（含数据库，以及未手动指定时自动生成的会话密钥与加密密钥）保存在当前目录的 `./data` 中，请将该目录纳入备份。同一数据目录只运行一个实例。
 
-### 环境变量
+对外收款前，请为站点配置域名和 HTTPS，再在后台填写对应的异步通知地址。未配置公网通知地址时，服务可以启动，但不能发起收款。
 
-| 变量 | 必填 | 说明 |
-|------|------|------|
-| `WEB_ORIGIN` | 是 | 站点对外访问的源，须与浏览器地址栏一致，例如 `https://shop.example.com`。用于 CORS。 |
-| `ALIPAY_NOTIFY_URL` | 是 | 支付宝异步通知完整 URL，必须是公网 HTTPS，例如 `https://shop.example.com/api/payment/notify`。不要使用 `localhost`、内网地址或 HTTP。 |
-| `SESSION_SECRET` | 是 | 会话签名密钥。使用足够长的随机串，禁止沿用文档或示例中的占位值。 |
-| `SETTINGS_ENCRYPTION_KEY` | 是 | 用于加密存储支付宝密钥与卡密。使用足够长的随机串，部署后不要更换；更换或丢失后将无法解密已有数据。 |
-| `ADMIN_BASE_PATH` | 否 | 管理后台路径，默认 `/admin`。可改为自定义的单段路径（例如 `/my-admin`）。不要使用 `/api`、`/cart`、`/pay`、`/order`、`/query`、`/cashier` 等前台或接口保留路径。后台入口不会出现在前台导航中，需在浏览器中手动输入。 |
-| `JIMA_PORT` | 否 | 主机映射端口，默认 `3001`。 |
-| `NODE_ENV` | 已在 Compose 中设定 | 必须为 `production`。生产模式不会写入演示数据，并启用启动检查。 |
-| `DATABASE_PATH` | 已在 Compose 中设定 | 容器内数据库路径，默认 `/data/jima.db`，对应主机上的 `./data/jima.db`。应指向新的空库，不要复用开发数据库。 |
-| `ADMIN_USERNAME` / `ADMIN_PASSWORD` | 否 | 仅当库中尚无管理员时，可用环境变量自动创建账号（密码至少 8 位）。更推荐首次打开后台时在网页中自行设置，创建后从环境变量中移除密码。 |
+可选环境变量：`ADMIN_BASE_PATH`（后台路径，默认 `/admin`）、`SESSION_SECRET`、`SETTINGS_ENCRYPTION_KEY`（若自行指定，请使用足够长的随机串，且部署后不要更换加密密钥）、`WEB_ORIGIN`、`ALIPAY_NOTIFY_URL`（亦可在后台填写通知地址）。不要将占位示例值写入密钥变量。
 
-生成密钥：
+若无法拉取镜像，可在本仓库根目录执行：
 
 ```bash
-openssl rand -hex 32
-```
-
-命令行使用 Compose 时，可将 [`compose.env.example`](./compose.env.example) 复制为 `.env` 后填写，再执行 `docker compose up -d`。填写后的 `.env` 含有密钥，不要提交到 Git。
-
-### 从源码构建镜像
-
-适用于需要修改代码，或不便拉取 GHCR 镜像的情况。在仓库根目录配置好与上一节相同的环境变量后执行：
-
-```bash
-git clone https://github.com/MeLoser815/jima-shop.git
-cd jima-shop
-cp compose.env.example .env
-# 编辑 .env，填入域名与密钥
 docker compose -f docker-compose.build.yml up --build -d
 ```
 
@@ -145,7 +86,7 @@ docker compose -f docker-compose.build.yml up --build -d
 git clone https://github.com/MeLoser815/jima-shop.git
 cd jima-shop
 cp .env.example apps/api/.env
-# 开发环境可先沿用示例密钥；上线前必须换成随机串，并按「生产部署」一节调整通知地址与 WEB_ORIGIN
+# 开发环境可先沿用示例密钥。使用 Docker 上线时，密钥可在数据目录自动生成，收款配置在后台填写。
 
 pnpm install
 pnpm dev
@@ -231,7 +172,7 @@ pnpm --filter @jima/api backup /safe/path/jima-backup.db
 ## 生产环境注意事项
 
 - 使用新的空数据库上线，不要直接沿用开发库。
-- 生产环境若密钥为占位值，或 `ALIPAY_NOTIFY_URL` 不是公网 HTTPS，进程会拒绝启动。
+- 生产环境若将 `SESSION_SECRET` 或 `SETTINGS_ENCRYPTION_KEY` 设为示例占位值，进程会拒绝启动；未设置时将在数据目录自动生成并保存。若设置了 `ALIPAY_NOTIFY_URL`，必须是公网 HTTPS。
 - 同一 SQLite 文件只允许一个写入进程。
 - 已售或已预占卡密的商品不可删除，请下架以保留发货记录。
 - 不要将 `.env`、`*.db`（含 `-wal` / `-shm`）或备份提交到 Git。
@@ -250,9 +191,9 @@ pnpm start:prod   # build 后启动（须配合 NODE_ENV=production 与生产环
 pnpm backup       # 一致性备份
 ```
 
-## Star History
+## Star 趋势
 
-[![Stargazers over time](https://starchart.cc/MeLoser815/jima-shop.svg)](https://starchart.cc/MeLoser815/jima-shop)
+[![Star History Chart](https://api.star-history.com/chart?repos=MeLoser815/jima-shop&type=Date)](https://www.star-history.com/#MeLoser815/jima-shop&Date)
 
 ## License
 

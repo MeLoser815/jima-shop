@@ -20,6 +20,7 @@ import {
 import { attachKeysToOrders, fulfillPendingOrder } from '../cardKeys.js';
 import { issueAdminAuth, requireAdmin } from '../middleware/auth.js';
 import { maskSecret } from '../utils/crypto.js';
+import { isPublicHttpsUrl } from '../security.js';
 
 const settingsSchema = z.object({
   appId: z.string().min(1, 'AppId 不能为空'),
@@ -271,6 +272,18 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           .code(400)
           .send({ ok: false, error: '支付宝公钥不能为空' });
       }
+      const notifyUrl = (d.notifyUrl || config.notifyUrl || '').trim();
+      if (
+        config.nodeEnv === 'production' &&
+        notifyUrl &&
+        !isPublicHttpsUrl(notifyUrl)
+      ) {
+        return reply.code(400).send({
+          ok: false,
+          error:
+            '异步通知 URL 必须是公网可访问的 HTTPS 地址，不能使用 localhost 或 HTTP。',
+        });
+      }
       saveAlipaySettings({
         appId: d.appId,
         privateKey,
@@ -278,7 +291,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
         gateway: d.gateway || config.gateway,
         storeId: d.storeId || '',
         sellerId: d.sellerId || '',
-        notifyUrl: d.notifyUrl || config.notifyUrl,
+        notifyUrl,
       });
       logAudit({
         actor: req.adminUsername || 'admin',
@@ -286,7 +299,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
         detail: {
           appId: d.appId,
           gateway: d.gateway || config.gateway,
-          notifyUrl: d.notifyUrl || config.notifyUrl,
+          notifyUrl,
           sellerId: d.sellerId || '',
         },
         ip: clientIp(req),

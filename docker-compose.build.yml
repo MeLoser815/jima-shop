@@ -2,10 +2,6 @@
 #
 # 在仓库根目录执行：
 #   docker compose -f docker-compose.build.yml up --build -d
-#
-# 环境变量要求与 docker-compose.yml 相同，可复制同目录的 .env，或在 1Panel 中填写。
-
-version: "3.8"
 
 services:
   jima-shop:
@@ -16,28 +12,9 @@ services:
     container_name: jima-shop
     restart: unless-stopped
     ports:
-      - "${JIMA_PORT:-3001}:3001"
+      - "3001:3001"
     environment:
-      NODE_ENV: production
-      HOST: 0.0.0.0
-      PORT: "3001"
-      DATABASE_PATH: /data/jima.db
-      WEB_ORIGIN: ${WEB_ORIGIN}
-      ALIPAY_NOTIFY_URL: ${ALIPAY_NOTIFY_URL}
-      SESSION_SECRET: ${SESSION_SECRET}
-      SETTINGS_ENCRYPTION_KEY: ${SETTINGS_ENCRYPTION_KEY}
-      ADMIN_BASE_PATH: ${ADMIN_BASE_PATH:-/admin}
+      - TZ=Asia/Shanghai
+      - NODE_ENV=production
     volumes:
       - ./data:/data
-    healthcheck:
-      test:
-        [
-          "CMD",
-          "node",
-          "-e",
-          "fetch('http://127.0.0.1:3001/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
-        ]
-      interval: 30s
-      timeout: 5s
-      start_period: 20s
-      retries: 5

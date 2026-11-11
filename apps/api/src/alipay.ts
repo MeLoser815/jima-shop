@@ -3,6 +3,8 @@ import {
   loadAlipaySettings,
   type AlipaySettings,
 } from './db.js';
+import { isPublicHttpsUrl } from './security.js';
+import { config } from './config.js';
 import {
   normalizePrivateKey,
   normalizePublicKey,
@@ -91,6 +93,20 @@ function parseResult(raw: Record<string, unknown>): AlipayBizResult {
   };
 }
 
+
+function resolveNotifyUrl(override?: string, fallback?: string): string | undefined {
+  return (override || fallback || '').trim() || undefined;
+}
+
+function rejectIfNotifyUnusable(notifyUrl: string | undefined): AlipayBizResult | null {
+  if (config.nodeEnv !== 'production') return null;
+  if (isPublicHttpsUrl(notifyUrl)) return null;
+  return {
+    ok: false,
+    msg: '尚未配置公网 HTTPS 异步通知地址。请在管理后台「支付宝收款」中填写，例如 https://你的域名/api/payment/notify。',
+    raw: {},
+  };
+}
 /**
  * 当面付 · 收款码预下单 alipay.trade.precreate
  */
@@ -103,8 +119,10 @@ export async function tradePrecreate(input: {
   notifyUrl?: string;
 }): Promise<AlipayBizResult> {
   const settings = loadAlipaySettings();
+  const notifyUrl = resolveNotifyUrl(input.notifyUrl, settings?.notifyUrl);
+  const blocked = rejectIfNotifyUnusable(notifyUrl);
+  if (blocked) return blocked;
   const sdk = createSdk(settings);
-  const notifyUrl = input.notifyUrl || settings!.notifyUrl;
   const storeId = input.storeId || settings!.storeId;
 
   try {
@@ -137,8 +155,10 @@ export async function tradePay(input: {
   notifyUrl?: string;
 }): Promise<AlipayBizResult> {
   const settings = loadAlipaySettings();
+  const notifyUrl = resolveNotifyUrl(input.notifyUrl, settings?.notifyUrl);
+  const blocked = rejectIfNotifyUnusable(notifyUrl);
+  if (blocked) return blocked;
   const sdk = createSdk(settings);
-  const notifyUrl = input.notifyUrl || settings!.notifyUrl;
   const storeId = input.storeId || settings!.storeId;
 
   try {

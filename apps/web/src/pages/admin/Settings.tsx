@@ -5,6 +5,19 @@ import { api } from '../../api';
 const SANDBOX = 'https://openapi-sandbox.dl.alipaydev.com/gateway.do';
 const PROD = 'https://openapi.alipay.com/gateway.do';
 
+function suggestedNotifyUrl(): string {
+  if (typeof window === 'undefined') return '';
+  try {
+    const origin = window.location.origin;
+    const host = new URL(origin).hostname;
+    if (!origin.startsWith('https://')) return '';
+    if (host === 'localhost' || host === '127.0.0.1') return '';
+    return `${origin}/api/payment/notify`;
+  } catch {
+    return '';
+  }
+}
+
 type FormVals = {
   appId: string;
   privateKey: string;
@@ -36,7 +49,7 @@ export default function Settings() {
           gateway: res.settings.gateway || PROD,
           storeId: res.settings.storeId || '',
           sellerId: res.settings.sellerId || '',
-          notifyUrl: res.settings.notifyUrl || '',
+          notifyUrl: res.settings.notifyUrl || suggestedNotifyUrl(),
           privateKey: '',
           alipayPublicKey: '',
         });
@@ -76,7 +89,7 @@ export default function Settings() {
     <div style={{ maxWidth: 720 }}>
       <Typography.Title level={3}>支付宝收款配置</Typography.Title>
       <Typography.Paragraph type="secondary">
-        填好 AppId、应用私钥、支付宝公钥后，前台结账即可走当面付收款码。
+        在此填写 AppId、应用私钥、支付宝公钥，以及公网 HTTPS 异步通知地址。保存后前台即可用当面付收款码结账。
       </Typography.Paragraph>
       {configured ? (
         <Alert
@@ -136,8 +149,12 @@ export default function Settings() {
         <Form.Item name="storeId" label="门店编号 store_id（可选）">
           <Input />
         </Form.Item>
-        <Form.Item name="notifyUrl" label="异步通知 URL">
-          <Input placeholder="公网可访问的 /api/payment/notify" />
+        <Form.Item
+          name="notifyUrl"
+          label="异步通知 URL"
+          extra="站点通过域名和 HTTPS 对外访问时填写，例如 https://你的域名/api/payment/notify。未填写则无法发起收款。"
+        >
+          <Input placeholder="https://你的域名/api/payment/notify" />
         </Form.Item>
         <Button type="primary" htmlType="submit" className="candy-btn" loading={busy} size="large">
           保存配置

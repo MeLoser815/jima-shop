@@ -7,6 +7,7 @@ import bcrypt from 'bcryptjs';
 
 import {
   assertProductionConfig,
+  applyPersistedProductionSecrets,
   isPublicHttpsUrl,
   isInsecureSecret,
   shouldSeedSampleData,
@@ -70,7 +71,7 @@ describe('production config guards', () => {
     assert.equal(isInsecureSecret('a-sufficiently-long-random-secret'), false);
   });
 
-  it('refuses to start in production with placeholders or non-public notify', () => {
+  it('refuses placeholder secrets and invalid notify URLs, but allows a first start without notify', () => {
     assert.doesNotThrow(() =>
       assertProductionConfig({ NODE_ENV: 'development' }),
     );
@@ -80,7 +81,6 @@ describe('production config guards', () => {
           NODE_ENV: 'production',
           SESSION_SECRET: DEV_SESSION_SECRET_FALLBACK,
           SETTINGS_ENCRYPTION_KEY: 'real-encryption-key-not-placeholder!',
-          ALIPAY_NOTIFY_URL: 'https://shop.example.com/api/payment/notify',
         }),
       /SESSION_SECRET/,
     );
@@ -90,7 +90,6 @@ describe('production config guards', () => {
           NODE_ENV: 'production',
           SESSION_SECRET: 'real-session-secret-not-placeholder!!',
           SETTINGS_ENCRYPTION_KEY: DEV_ENCRYPTION_KEY_FALLBACK,
-          ALIPAY_NOTIFY_URL: 'https://shop.example.com/api/payment/notify',
         }),
       /SETTINGS_ENCRYPTION_KEY/,
     );
@@ -109,9 +108,33 @@ describe('production config guards', () => {
         NODE_ENV: 'production',
         SESSION_SECRET: 'real-session-secret-not-placeholder!!',
         SETTINGS_ENCRYPTION_KEY: 'real-encryption-key-not-placeholder!',
+      }),
+    );
+    assert.doesNotThrow(() =>
+      assertProductionConfig({
+        NODE_ENV: 'production',
+        SESSION_SECRET: 'real-session-secret-not-placeholder!!',
+        SETTINGS_ENCRYPTION_KEY: 'real-encryption-key-not-placeholder!',
         ALIPAY_NOTIFY_URL: 'https://shop.example.com/api/payment/notify',
       }),
     );
+  });
+
+  it('persists generated production secrets in the data directory', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jima-secrets-'));
+    const env: NodeJS.ProcessEnv = { NODE_ENV: 'production' };
+    applyPersistedProductionSecrets(dir, env);
+    const firstSession = env.SESSION_SECRET;
+    const firstKey = env.SETTINGS_ENCRYPTION_KEY;
+    assert.ok(firstSession && firstSession.length >= 32);
+    assert.ok(firstKey && firstKey.length >= 32);
+    assert.equal(isInsecureSecret(firstSession), false);
+    assert.equal(isInsecureSecret(firstKey), false);
+    const env2: NodeJS.ProcessEnv = { NODE_ENV: 'production' };
+    applyPersistedProductionSecrets(dir, env2);
+    assert.equal(env2.SESSION_SECRET, firstSession);
+    assert.equal(env2.SETTINGS_ENCRYPTION_KEY, firstKey);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 
   it('never seeds demo catalog in production', () => {

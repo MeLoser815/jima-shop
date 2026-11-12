@@ -84,10 +84,35 @@ export function verifyAdminToken(
   }
 }
 
-/** 规范化 PEM：无头尾时补上 PRIVATE KEY / PUBLIC KEY */
+function rawPrivateKeyBody(key: string): string {
+  return key
+    .trim()
+    .replace(/\\n/g, '\n')
+    .replace(/-----BEGIN [^-]+-----/g, '')
+    .replace(/-----END [^-]+-----/g, '')
+    .replace(/\s+/g, '');
+}
+
+/**
+ * 识别应用私钥格式。支付宝开放平台常见为 PKCS8（BEGIN PRIVATE KEY，
+ * 裸密钥多以 MIIEv 开头）；传统 PKCS1 为 BEGIN RSA PRIVATE KEY。
+ */
+export function detectPrivateKeyType(key: string): 'PKCS1' | 'PKCS8' {
+  const trimmed = key.trim().replace(/\\n/g, '\n');
+  if (/BEGIN RSA PRIVATE KEY/.test(trimmed)) return 'PKCS1';
+  if (/BEGIN PRIVATE KEY/.test(trimmed)) return 'PKCS8';
+  const raw = rawPrivateKeyBody(trimmed);
+  if (/^MIIEv|^MIGH|^MC4CAQAw/.test(raw)) return 'PKCS8';
+  return 'PKCS1';
+}
+
+/** 规范化 PEM：无头尾时按识别到的格式补上头尾 */
 export function normalizePrivateKey(key: string): string {
   const trimmed = key.trim().replace(/\\n/g, '\n');
   if (trimmed.includes('BEGIN')) return trimmed;
+  if (detectPrivateKeyType(trimmed) === 'PKCS8') {
+    return `-----BEGIN PRIVATE KEY-----\n${trimmed}\n-----END PRIVATE KEY-----`;
+  }
   return `-----BEGIN RSA PRIVATE KEY-----\n${trimmed}\n-----END RSA PRIVATE KEY-----`;
 }
 

@@ -5,6 +5,7 @@ import {
   decrypt,
   encrypt,
   maskSecret,
+  detectPrivateKeyType,
   normalizePrivateKey,
   normalizePublicKey,
   verifyAdminToken,
@@ -38,9 +39,18 @@ describe('crypto', () => {
     const raw = 'MIIEowIBAAKCAQEA0Z3';
     const priv = normalizePrivateKey(raw);
     assert.match(priv, /BEGIN RSA PRIVATE KEY/);
+    assert.equal(detectPrivateKeyType(raw), 'PKCS1');
     const pub = normalizePublicKey(raw);
     assert.match(pub, /BEGIN PUBLIC KEY/);
     assert.equal(normalizePrivateKey(priv), priv);
+
+    const pkcs8 = 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKc';
+    assert.equal(detectPrivateKeyType(pkcs8), 'PKCS8');
+    assert.match(normalizePrivateKey(pkcs8), /BEGIN PRIVATE KEY/);
+    assert.equal(
+      detectPrivateKeyType(normalizePrivateKey(pkcs8)),
+      'PKCS8',
+    );
   });
 
   it('maskSecret', () => {

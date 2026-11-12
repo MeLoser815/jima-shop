@@ -6,6 +6,7 @@ import {
 import { isPublicHttpsUrl } from './security.js';
 import { config } from './config.js';
 import {
+  detectPrivateKeyType,
   normalizePrivateKey,
   normalizePublicKey,
 } from './utils/crypto.js';
@@ -48,7 +49,7 @@ export function createSdk(settings?: AlipaySettings | null): AlipaySdk {
     privateKey: normalizePrivateKey(s.privateKey),
     alipayPublicKey: normalizePublicKey(s.alipayPublicKey),
     gateway: s.gateway,
-    keyType: 'PKCS1',
+    keyType: detectPrivateKeyType(s.privateKey),
     signType: 'RSA2',
     charset: 'utf-8',
     timeout: 15000,

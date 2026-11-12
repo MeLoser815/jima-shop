@@ -56,7 +56,7 @@ services:
     container_name: jima-shop
     restart: unless-stopped
     ports:
-      - "3333:3333"
+      - "8001:8001"
     environment:
       - TZ=Asia/Shanghai
       - NODE_ENV=production
@@ -68,7 +68,7 @@ volumes:
   jima-shop-data:
 ```
 
-启动后访问 `http://服务器地址:3333` 打开店铺，访问 `http://服务器地址:3333/admin` 创建管理员账号。随后在后台「账号安全」中修改后台访问路径（默认 `/admin` 较容易被扫描），并在「支付宝收款」中填写 AppId、应用私钥、支付宝公钥，以及公网 HTTPS 异步通知地址（例如 `https://你的域名/api/payment/notify`）。收款与后台路径均可在后台完成，不必写入 Compose。
+启动后访问 `http://服务器地址:8001` 打开店铺，访问 `http://服务器地址:8001/admin` 创建管理员账号。随后在后台「账号安全」中修改后台访问路径（默认 `/admin` 较容易被扫描），并在「支付宝收款」中填写 AppId、应用私钥、支付宝公钥，以及公网 HTTPS 异步通知地址（例如 `https://你的域名/api/payment/notify`）。收款与后台路径均可在后台完成，不必写入 Compose。
 
 数据（含数据库，以及未手动指定时自动生成的会话密钥与加密密钥）保存在 Docker 数据卷 `jima-shop-data` 中，请将该数据卷纳入备份。同一数据卷只运行一个实例。
 
@@ -98,7 +98,7 @@ pnpm dev
 
 - 店铺前台：http://localhost:5173/
 - 管理后台：http://localhost:5173/admin（默认路径；生产环境可在后台「账号安全」中修改，本地开发也可用 `ADMIN_BASE_PATH` 覆盖）
-- API：http://localhost:3333
+- API：http://localhost:8001
 
 开发环境默认会写入示例分类、商品和 `DEMO-` 前缀演示卡密。若不需要演示数据，在环境变量中设置 `JIMA_SEED_DEMO=0` 后再以空的 `DATABASE_PATH` 启动。
 

@@ -102,7 +102,7 @@ describe('production config guards', () => {
           NODE_ENV: 'production',
           SESSION_SECRET: 'real-session-secret-not-placeholder!!',
           SETTINGS_ENCRYPTION_KEY: 'real-encryption-key-not-placeholder!',
-          ALIPAY_NOTIFY_URL: 'http://localhost:3333/api/payment/notify',
+          ALIPAY_NOTIFY_URL: 'http://localhost:8001/api/payment/notify',
         }),
       /ALIPAY_NOTIFY_URL/,
     );

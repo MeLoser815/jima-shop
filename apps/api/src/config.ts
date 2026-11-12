@@ -25,7 +25,7 @@ if (isProd) {
 }
 
 export const config = {
-  port: Number(process.env.PORT ?? 3333),
+  port: Number(process.env.PORT ?? 8001),
   host: process.env.HOST ?? '0.0.0.0',
   /** 可选：仅首次无管理员时用于自动创建账号 */
   bootstrapAdminUsername: process.env.ADMIN_USERNAME?.trim() || '',
@@ -42,7 +42,7 @@ export const config = {
   databasePath,
   notifyUrl:
     process.env.ALIPAY_NOTIFY_URL ??
-    (isProd ? '' : 'http://localhost:3333/api/payment/notify'),
+    (isProd ? '' : 'http://localhost:8001/api/payment/notify'),
   gateway:
     process.env.ALIPAY_GATEWAY ?? 'https://openapi.alipay.com/gateway.do',
   webOrigin:

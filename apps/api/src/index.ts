@@ -11,7 +11,7 @@ import bcrypt from 'bcryptjs';
 import { injectAdminBasePath } from './adminPath.js';
 import { config } from './config.js';
 import { assertProductionConfig } from './security.js';
-import { createFirstAdminUser, getAdminBasePath, getDb, needsAdminSetup } from './db.js';
+import { closeDb, createFirstAdminUser, getAdminBasePath, getDb, needsAdminSetup } from './db.js';
 import { startReservationReleaser } from './cardKeys.js';
 import { adminRoutes } from './routes/admin.js';
 import { paymentRoutes } from './routes/payment.js';
@@ -51,6 +51,8 @@ async function main() {
     logger: {
       level: config.nodeEnv === 'production' ? 'info' : 'debug',
     },
+    // 1Panel / Nginx 等反代后需要信任 X-Forwarded-*，否则限流会把所有访客算成同一个 IP
+    trustProxy: true,
   });
 
   await app.register(helmet, {
@@ -127,6 +129,22 @@ async function main() {
       );
     }
   }
+
+  const shutdown = async (signal: string) => {
+    app.log.info({ signal }, '正在关闭');
+    try {
+      await app.close();
+    } finally {
+      closeDb();
+    }
+    process.exit(0);
+  };
+  process.once('SIGINT', () => {
+    void shutdown('SIGINT');
+  });
+  process.once('SIGTERM', () => {
+    void shutdown('SIGTERM');
+  });
 
   await app.listen({ port: config.port, host: config.host });
   app.log.info(`API 已启动 http://${config.host}:${config.port}`);

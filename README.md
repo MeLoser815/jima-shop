@@ -60,6 +60,7 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - NODE_ENV=production
+      - HOST=0.0.0.0
     volumes:
       - ./data:/data
 ```
@@ -115,7 +116,7 @@ NODE_ENV=production pnpm start:prod
 
 ## 配置与首次使用
 
-环境变量说明见仓库根目录的 [`.env.example`](./.env.example)（本地开发复制为 `apps/api/.env`）以及上文的 Compose 环境变量表。前端开发服务器会读取同一份 `apps/api/.env`（或仓库根目录的 `.env`），`ADMIN_BASE_PATH` 只需配置一处。
+环境变量说明见仓库根目录的 [`.env.example`](./.env.example)（本地开发复制为 `apps/api/.env`），以及上文「部署」一节中的可选环境变量说明。前端开发服务器会读取同一份 `apps/api/.env`（或仓库根目录的 `.env`），`ADMIN_BASE_PATH` 只需配置一处。
 
 后台路径的真实安全依赖管理员鉴权、会话作废和接口限流，而不是路径本身的隐蔽性。
 
@@ -124,7 +125,8 @@ NODE_ENV=production pnpm start:prod
 1. 在「风格模板」中选择前台皮肤
 2. 在「商品分类」与「商品管理」中维护分类并上架商品
 3. 在商品的「卡密货源」中导入卡密
-4. 在「支付宝收款」中填写 AppId、应用私钥和支付宝公钥
+4. 在「支付宝收款」中填写 AppId、应用私钥、支付宝公钥，以及公网 HTTPS 异步通知地址
+5. 在「账号安全」中修改后台访问路径（默认 `/admin` 较容易被扫描）
 
 生产镜像与 `NODE_ENV=production` 启动都不会自动写入示例商品或演示卡密。
 

@@ -16,5 +16,6 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - NODE_ENV=production
+      - HOST=0.0.0.0
     volumes:
       - ./data:/data

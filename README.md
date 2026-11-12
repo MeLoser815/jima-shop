@@ -62,12 +62,15 @@ services:
       - NODE_ENV=production
       - HOST=0.0.0.0
     volumes:
-      - ./data:/data
+      - jima-shop-data:/data
+
+volumes:
+  jima-shop-data:
 ```
 
 启动后访问 `http://服务器地址:3333` 打开店铺，访问 `http://服务器地址:3333/admin` 创建管理员账号。随后在后台「账号安全」中修改后台访问路径（默认 `/admin` 较容易被扫描），并在「支付宝收款」中填写 AppId、应用私钥、支付宝公钥，以及公网 HTTPS 异步通知地址（例如 `https://你的域名/api/payment/notify`）。收款与后台路径均可在后台完成，不必写入 Compose。
 
-数据（含数据库，以及未手动指定时自动生成的会话密钥与加密密钥）保存在当前目录的 `./data` 中，请将该目录纳入备份。同一数据目录只运行一个实例。
+数据（含数据库，以及未手动指定时自动生成的会话密钥与加密密钥）保存在 Docker 数据卷 `jima-shop-data` 中，请将该数据卷纳入备份。同一数据卷只运行一个实例。
 
 对外收款前，请为站点配置域名和 HTTPS，再在后台填写对应的异步通知地址。未配置公网通知地址时，服务可以启动，但不能发起收款。
 
@@ -153,12 +156,13 @@ NODE_ENV=production pnpm start:prod
 
 ## 备份
 
-Docker 部署时，请备份主机上的 `./data` 目录，同时妥善保管 `SETTINGS_ENCRYPTION_KEY` 与 `SESSION_SECRET`。仅复制数据库文件而没有加密密钥，将无法解密卡密和支付宝配置。
+Docker 部署时，请备份数据卷 `jima-shop-data`，同时妥善保管 `SETTINGS_ENCRYPTION_KEY` 与 `SESSION_SECRET`。仅复制数据库文件而没有加密密钥，将无法解密卡密和支付宝配置。
 
 进行一致性备份时，不要在服务运行中直接 `cp` 正在使用的数据库文件。可在容器内调用备份命令，将快照写入数据卷：
 
 ```bash
 docker compose exec jima-shop node dist/scripts/backup.js /data/jima-backup.db
+docker compose cp jima-shop:/data/jima-backup.db ./jima-backup.db
 ```
 
 非容器部署使用：

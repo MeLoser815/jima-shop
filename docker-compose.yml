@@ -10,4 +10,7 @@ services:
       - NODE_ENV=production
       - HOST=0.0.0.0
     volumes:
-      - ./data:/data
+      - jima-shop-data:/data
+
+volumes:
+  jima-shop-data:

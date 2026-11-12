@@ -320,16 +320,38 @@ a { color: var(--primary); }
 
 .section-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px 16px;
   margin: 8px 0 16px;
   flex-wrap: wrap;
+}
+.section-head:has(> .section-head-title) {
+  flex-wrap: nowrap;
 }
 .section-head .ant-typography {
   color: var(--text) !important;
 }
+.section-head-title {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.section-head-title .anticon {
+  vertical-align: -0.08em;
+}
+.section-head .section-head-count {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  color: var(--muted) !important;
+  line-height: 1.2;
+}
 
+.product-grid > .ant-col {
+  display: flex;
+}
 .product-card {
   border-radius: 24px !important;
   overflow: hidden;
@@ -337,7 +359,21 @@ a { color: var(--primary); }
   box-shadow: 0 12px 30px color-mix(in srgb, var(--secondary) 12%, transparent);
   transition: transform .22s ease, box-shadow .22s ease !important;
   background: var(--card) !important;
+  width: 100%;
   height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+.product-card .ant-card-body {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+}
+.product-card .ant-card-meta {
+  flex: 1 1 auto;
+}
+.product-card .ant-card-meta-title {
+  min-height: 2.6em;
 }
 .product-card:hover {
   transform: translateY(-5px) scale(1.01);
@@ -351,6 +387,7 @@ a { color: var(--primary); }
 .product-card .ant-card-actions {
   background: transparent;
   border-top-color: var(--border);
+  margin-top: auto;
 }
 .product-cover-link { display: block; }
 .product-cover {
@@ -778,9 +815,6 @@ body.theme-dark .admin-mobile-bar {
   font-size: 14px;
   margin-bottom: 4px;
 }
-.product-card-hero .product-cover {
-  aspect-ratio: 16 / 10;
-}
 .detail-page { padding-bottom: 12px; }
 .back-link { margin-bottom: 8px; padding-inline: 0 !important; color: var(--muted) !important; }
 .detail-title { margin: 8px 0 !important; color: var(--text) !important; }
@@ -861,7 +895,6 @@ body.theme-dark .admin-mobile-bar {
   .admin-header { display: none !important; }
   .admin-content { margin: 10px; min-height: calc(100vh - 64px); }
   .motif-seal { display: none; }
-  .product-card-hero .product-cover { aspect-ratio: 1 / 1; }
 }
 
 @media (max-width: 420px) {

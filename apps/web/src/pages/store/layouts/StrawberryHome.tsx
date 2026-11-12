@@ -114,13 +114,13 @@ export default function StrawberryHome({
       </div>
 
       <div id="goods" className="section-head">
-        <Typography.Title level={3} style={{ margin: 0 }}>
+        <Typography.Title level={3} className="section-head-title" style={{ margin: 0 }}>
           <HeartFilled style={{ color: 'var(--primary)', marginRight: 8 }} />
           {categoryId === 'all'
             ? '全部好物'
             : categories.find((c) => c.id === categoryId)?.name || '精选'}
         </Typography.Title>
-        <Typography.Text type="secondary">
+        <Typography.Text type="secondary" className="section-head-count">
           {loading ? '加载中…' : `共 ${products.length} 件`}
         </Typography.Text>
       </div>
@@ -129,17 +129,11 @@ export default function StrawberryHome({
         <Empty description="这个分类暂时没有商品哦～" />
       ) : (
         <Row gutter={[18, 18]} className="product-grid">
-          {products.map((p, idx) => (
-            <Col
-              xs={12}
-              sm={12}
-              md={8}
-              lg={idx === 0 && categoryId === 'all' ? 12 : 6}
-              key={p.id}
-            >
+          {products.map((p) => (
+            <Col xs={12} sm={12} md={8} lg={6} key={p.id}>
               <Card
                 hoverable
-                className={`product-card ${idx === 0 && categoryId === 'all' ? 'product-card-hero' : ''}`}
+                className="product-card"
                 cover={
                   <Link to={`/p/${p.id}`} className="product-cover-link">
                     <div

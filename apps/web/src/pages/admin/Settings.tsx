@@ -89,7 +89,7 @@ export default function Settings() {
     <div style={{ maxWidth: 720 }}>
       <Typography.Title level={3}>支付宝收款配置</Typography.Title>
       <Typography.Paragraph type="secondary">
-        在此填写 AppId、应用私钥、支付宝公钥，以及公网 HTTPS 异步通知地址。保存后前台即可用当面付收款码结账。
+        在此填写 AppId、应用私钥（商户密钥）和支付宝公钥（商户 key）即可收款。站点用 HTTPS 域名访问时，系统会按当前域名自动设置支付宝回调地址，一般不必再填。
       </Typography.Paragraph>
       {configured ? (
         <Alert
@@ -118,21 +118,23 @@ export default function Settings() {
         <Form.Item
           name="privateKey"
           label="应用私钥"
+          extra="填写商户密钥，不要把公钥填到这里。"
           rules={configured ? [] : [{ required: true, message: '请填写私钥' }]}
         >
           <Input.TextArea
             rows={4}
-            placeholder={configured ? '已保存，留空则不修改' : 'RSA2 应用私钥'}
+            placeholder={configured ? '已保存，留空则不修改' : '商户密钥（RSA2 应用私钥）'}
           />
         </Form.Item>
         <Form.Item
           name="alipayPublicKey"
           label="支付宝公钥"
+          extra="填写商户 key / 支付宝公钥，不要填写应用公钥。"
           rules={configured ? [] : [{ required: true, message: '请填写公钥' }]}
         >
           <Input.TextArea
             rows={4}
-            placeholder={configured ? '已保存，留空则不修改' : '支付宝公钥（非应用公钥）'}
+            placeholder={configured ? '已保存，留空则不修改' : '商户 key / 支付宝公钥（不要填应用公钥）'}
           />
         </Form.Item>
         <Form.Item name="gateway" label="网关" rules={[{ required: true }]}>
@@ -152,7 +154,7 @@ export default function Settings() {
         <Form.Item
           name="notifyUrl"
           label="异步通知 URL"
-          extra="站点通过域名和 HTTPS 对外访问时填写，例如 https://你的域名/api/payment/notify。未填写则无法发起收款。"
+          extra="通常不用填。用 HTTPS 域名访问店铺时，会自动使用当前域名下的 /api/payment/notify，例如 https://pay.example.com/api/payment/notify。只有访问域名和收款域名不一致时才需要手动填写。"
         >
           <Input placeholder="https://你的域名/api/payment/notify" />
         </Form.Item>

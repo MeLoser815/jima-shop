@@ -8,6 +8,7 @@ import {
   tradePrecreate,
   tradeQuery,
 } from '../alipay.js';
+import { buildAutoNotifyUrl } from '../security.js';
 import { createOrder, getOrderByOutTradeNo, updateOrder } from '../db.js';
 import { getPublicOrderView } from '../cardKeys.js';
 import { requireAdmin } from '../middleware/auth.js';
@@ -64,6 +65,10 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
           totalAmount: parsed.data.amount,
           subject: parsed.data.subject,
           body: parsed.data.body,
+          notifyUrl: buildAutoNotifyUrl(
+            req.protocol,
+            String(req.headers.host || req.hostname || ''),
+          ),
         });
 
         if (!result.ok) {
@@ -134,6 +139,10 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
           totalAmount: parsed.data.amount,
           subject: parsed.data.subject,
           authCode: parsed.data.authCode,
+          notifyUrl: buildAutoNotifyUrl(
+            req.protocol,
+            String(req.headers.host || req.hostname || ''),
+          ),
         });
 
         if (!result.ok) {

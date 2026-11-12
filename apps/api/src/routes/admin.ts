@@ -2,7 +2,14 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import bcrypt from 'bcryptjs';
 import { z } from 'zod';
 import { config } from '../config.js';
-import { logAudit, listAuditLogs } from '../audit.js';
+import {
+  getAuditLogRetentionDays,
+  listAuditLogs,
+  logAudit,
+  normalizeAuditPage,
+  normalizeAuditPageSize,
+  setAuditLogRetentionDays,
+} from '../audit.js';
 import {
   AdminSetupError,
   createFirstAdminUser,
@@ -405,9 +412,29 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     '/api/admin/audit',
     { preHandler: requireAdmin },
     async (req) => {
-      const q = req.query as { limit?: string };
-      const limit = Math.min(Number(q.limit ?? 100) || 100, 500);
-      return { ok: true, logs: listAuditLogs(limit) };
+      const q = req.query as { page?: string; pageSize?: string };
+      const page = normalizeAuditPage(q.page);
+      const pageSize = normalizeAuditPageSize(q.pageSize);
+      return {
+        ok: true,
+        ...listAuditLogs(page, pageSize),
+        retentionDays: getAuditLogRetentionDays(),
+      };
+    },
+  );
+
+  app.put(
+    '/api/admin/audit/retention',
+    { preHandler: requireAdmin },
+    async (req, reply) => {
+      const days = Number((req.body as { days?: unknown } | undefined)?.days);
+      try {
+        const retentionDays = setAuditLogRetentionDays(days);
+        return { ok: true, retentionDays };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '保留时间无效';
+        return reply.code(400).send({ ok: false, error: message });
+      }
     },
   );
 

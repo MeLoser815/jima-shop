@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { customAlphabet } from 'nanoid';
 import { z } from 'zod';
 import { AlipayConfigError, tradePrecreate, tradeQuery } from '../alipay.js';
+import { buildAutoNotifyUrl } from '../security.js';
 import { getOrderByOutTradeNo, updateOrder } from '../db.js';
 import {
   createReservedCheckoutOrder,
@@ -96,6 +97,10 @@ export async function storeRoutes(app: FastifyInstance): Promise<void> {
           totalAmount: reserved.totalAmount,
           subject,
           body: lines.map((l) => `${l.productName}x${l.quantity}`).join(', '),
+          notifyUrl: buildAutoNotifyUrl(
+            req.protocol,
+            String(req.headers.host || req.hostname || ''),
+          ),
         });
 
         if (!result.ok) {

@@ -95,18 +95,22 @@ function parseResult(raw: Record<string, unknown>): AlipayBizResult {
 }
 
 
-function resolveNotifyUrl(override?: string, fallback?: string): string | undefined {
-  return (override || fallback || '').trim() || undefined;
-}
-
-function rejectIfNotifyUnusable(notifyUrl: string | undefined): AlipayBizResult | null {
-  if (config.nodeEnv !== 'production') return null;
-  if (isPublicHttpsUrl(notifyUrl)) return null;
-  return {
-    ok: false,
-    msg: '尚未配置公网 HTTPS 异步通知地址。请在管理后台「支付宝收款」中填写，例如 https://你的域名/api/payment/notify。',
-    raw: {},
+/**
+ * 优先使用后台手动填写的公网 HTTPS 通知地址；
+ * 未填写时用当前访问域名自动拼出，例如 https://pay.example.com/api/payment/notify。
+ * 都没有时不传 notify_url，改由前台轮询查单。
+ */
+export function resolveNotifyUrl(
+  configured?: string,
+  autoFromRequest?: string,
+): string | undefined {
+  const usable = (url: string | undefined): string | undefined => {
+    const t = (url || '').trim() || undefined;
+    if (!t) return undefined;
+    if (config.nodeEnv === 'production' && !isPublicHttpsUrl(t)) return undefined;
+    return t;
   };
+  return usable(configured) || usable(autoFromRequest);
 }
 /**
  * 当面付 · 收款码预下单 alipay.trade.precreate
@@ -120,9 +124,7 @@ export async function tradePrecreate(input: {
   notifyUrl?: string;
 }): Promise<AlipayBizResult> {
   const settings = loadAlipaySettings();
-  const notifyUrl = resolveNotifyUrl(input.notifyUrl, settings?.notifyUrl);
-  const blocked = rejectIfNotifyUnusable(notifyUrl);
-  if (blocked) return blocked;
+  const notifyUrl = resolveNotifyUrl(settings?.notifyUrl, input.notifyUrl);
   const sdk = createSdk(settings);
   const storeId = input.storeId || settings!.storeId;
 
@@ -156,9 +158,7 @@ export async function tradePay(input: {
   notifyUrl?: string;
 }): Promise<AlipayBizResult> {
   const settings = loadAlipaySettings();
-  const notifyUrl = resolveNotifyUrl(input.notifyUrl, settings?.notifyUrl);
-  const blocked = rejectIfNotifyUnusable(notifyUrl);
-  if (blocked) return blocked;
+  const notifyUrl = resolveNotifyUrl(settings?.notifyUrl, input.notifyUrl);
   const sdk = createSdk(settings);
   const storeId = input.storeId || settings!.storeId;
 

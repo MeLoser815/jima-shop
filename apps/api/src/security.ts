@@ -41,6 +41,20 @@ export function isPublicHttpsUrl(url: string | undefined): boolean {
   }
 }
 
+/** 根据当前访问地址生成支付宝异步通知 URL。仅在公网 HTTPS 时返回。 */
+export function buildAutoNotifyUrl(
+  protocol: string,
+  hostHeader: string | undefined,
+): string | undefined {
+  const host = (hostHeader ?? '').trim().split('/')[0];
+  if (!host) return undefined;
+  const proto = protocol.toLowerCase().replace(/:$/, '');
+  if (proto !== 'https') return undefined;
+  const url = `https://${host}/api/payment/notify`;
+  return isPublicHttpsUrl(url) ? url : undefined;
+}
+
+
 export function shouldSeedSampleData(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {

@@ -9,6 +9,7 @@ import {
   assertProductionConfig,
   applyPersistedProductionSecrets,
   isPublicHttpsUrl,
+  buildAutoNotifyUrl,
   isInsecureSecret,
   shouldSeedSampleData,
   sanitizeCoverUrl,
@@ -68,6 +69,13 @@ describe('production config guards', () => {
     assert.equal(isPublicHttpsUrl('https://127.0.0.1/api/payment/notify'), false);
     assert.equal(isPublicHttpsUrl('https://10.0.0.8/notify'), false);
     assert.equal(isPublicHttpsUrl('https://192.168.1.2/notify'), false);
+    assert.equal(
+      buildAutoNotifyUrl('https', 'pay.gdnb666.top'),
+      'https://pay.gdnb666.top/api/payment/notify',
+    );
+    assert.equal(buildAutoNotifyUrl('http', 'pay.gdnb666.top'), undefined);
+    assert.equal(buildAutoNotifyUrl('https', 'localhost:8001'), undefined);
+    assert.equal(buildAutoNotifyUrl('https', '127.0.0.1'), undefined);
     assert.equal(isInsecureSecret(DEV_SESSION_SECRET_FALLBACK), true);
     assert.equal(isInsecureSecret(DEV_ENCRYPTION_KEY_FALLBACK), true);
     assert.equal(isInsecureSecret(''), true);

@@ -173,7 +173,11 @@ export const api = {
       auth: true,
     });
   },
-  listAudit(limit = 100) {
+  listAudit(page = 1, pageSize = 15) {
+    const q = new URLSearchParams({
+      page: String(page),
+      pageSize: String(pageSize),
+    });
     return request<{
       ok: boolean;
       logs: Array<{
@@ -184,7 +188,17 @@ export const api = {
         ip: string | null;
         created_at: string;
       }>;
-    }>(`/api/admin/audit?limit=${limit}`, { auth: true });
+      total: number;
+      page: number;
+      pageSize: number;
+      retentionDays: number;
+    }>(`/api/admin/audit?${q}`, { auth: true });
+  },
+  updateAuditRetention(days: number) {
+    return request<{ ok: boolean; retentionDays: number }>(
+      '/api/admin/audit/retention',
+      { method: 'PUT', body: JSON.stringify({ days }), auth: true },
+    );
   },
   fulfillOrder(outTradeNo: string) {
     return request<{

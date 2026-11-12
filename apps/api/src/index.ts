@@ -12,6 +12,7 @@ import { injectAdminBasePath } from './adminPath.js';
 import { config } from './config.js';
 import { assertProductionConfig } from './security.js';
 import { closeDb, createFirstAdminUser, getAdminBasePath, getDb, needsAdminSetup } from './db.js';
+import { startAuditLogCleaner } from './audit.js';
 import { startReservationReleaser } from './cardKeys.js';
 import { adminRoutes } from './routes/admin.js';
 import { paymentRoutes } from './routes/payment.js';
@@ -46,6 +47,7 @@ async function main() {
   getDb();
   await maybeBootstrapAdmin();
   startReservationReleaser();
+  startAuditLogCleaner();
 
   const app = Fastify({
     logger: {

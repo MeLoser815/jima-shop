@@ -46,15 +46,15 @@ RUN chmod 755 /usr/local/bin/docker-entrypoint.sh \
 
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
-    PORT=3001 \
+    PORT=3333 \
     DATABASE_PATH=/data/jima.db
 
 WORKDIR /app/apps/api
-EXPOSE 3001
+EXPOSE 3333
 VOLUME ["/data"]
 USER root
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD ["node", "dist/index.js"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=5 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3001)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||3333)+'/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"

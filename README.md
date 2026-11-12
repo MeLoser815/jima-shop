@@ -56,7 +56,7 @@ services:
     container_name: jima-shop
     restart: unless-stopped
     ports:
-      - "3333:3001"
+      - "3333:3333"
     environment:
       - TZ=Asia/Shanghai
       - NODE_ENV=production
@@ -94,7 +94,7 @@ pnpm dev
 
 - 店铺前台：http://localhost:5173/
 - 管理后台：http://localhost:5173/admin（默认路径；生产环境可在后台「账号安全」中修改，本地开发也可用 `ADMIN_BASE_PATH` 覆盖）
-- API：http://localhost:3001
+- API：http://localhost:3333
 
 开发环境默认会写入示例分类、商品和 `DEMO-` 前缀演示卡密。若不需要演示数据，在环境变量中设置 `JIMA_SEED_DEMO=0` 后再以空的 `DATABASE_PATH` 启动。
 

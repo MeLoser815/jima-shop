@@ -99,6 +99,24 @@ async function main() {
   await app.register(categoryRoutes);
   await app.register(themeRoutes);
 
+  app.setErrorHandler((err, req, reply) => {
+    const statusCode = Number((err as { statusCode?: number }).statusCode) || 500;
+    const status = statusCode >= 400 && statusCode < 600 ? statusCode : 500;
+    const raw = err instanceof Error ? err.message.trim() : '';
+    req.log.error({ err }, 'unhandled request error');
+    if (!(req.url || '').startsWith('/api/')) {
+      return reply.code(status).send(raw || 'Internal Server Error');
+    }
+    const generic = /^(Internal Server Error|Bad Request|Not Found|Unauthorized|Forbidden)$/i;
+    const safe =
+      status >= 500
+        ? '服务暂时不可用，请稍后重试'
+        : raw && !generic.test(raw)
+          ? raw
+          : '请求失败，请稍后重试';
+    return reply.code(status).send({ ok: false, error: safe });
+  });
+
   if (config.nodeEnv === 'production') {
     const indexFile = path.join(webDist, 'index.html');
     if (fs.existsSync(indexFile)) {

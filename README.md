@@ -3,7 +3,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](./LICENSE)
 [![GitHub stars](https://img.shields.io/github/stars/MeLoser815/jima-shop?style=social)](https://github.com/MeLoser815/jima-shop/stargazers)
 
-可自建部署的开源卡密商店。顾客在前台浏览商品并完成结算，通过支付宝当面付扫码付款后自动获得卡密；商户在后台管理商品、分类、订单、卡密货源与店铺风格。
+可自建部署的开源卡密商店。顾客在前台浏览商品并完成结算，通过支付宝扫码付款后自动获得卡密；商户在后台管理商品、分类、订单、卡密货源与店铺风格。
 
 数据存储使用 SQLite（better-sqlite3，WAL 模式）。标准部署只运行 **一个 API 进程**，由该进程同时提供接口和前端静态资源。请勿对同一数据库文件使用多进程写入，也不要启用 PM2 cluster。
 

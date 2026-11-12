@@ -44,8 +44,8 @@ export default function AngelHome({
             <span>殿堂</span>
           </div>
           <div>
-            <strong>当面付</strong>
-            <span>降临</span>
+            <strong>支付宝</strong>
+            <span>扫码即付</span>
           </div>
         </div>
       </section>

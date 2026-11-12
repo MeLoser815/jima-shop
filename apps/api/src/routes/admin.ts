@@ -15,6 +15,7 @@ import {
   createFirstAdminUser,
   getAdminByUsername,
   getDashboardStats,
+  inspectAlipaySettings,
   loadAlipaySettings,
   saveAlipaySettings,
   settingsConfigured,
@@ -30,6 +31,7 @@ import {
 } from '../db.js';
 import { attachKeysToOrders, fulfillPendingOrder } from '../cardKeys.js';
 import { issueAdminAuth, requireAdmin } from '../middleware/auth.js';
+import { validateAlipayConfig } from '../alipay.js';
 import { maskSecret } from '../utils/crypto.js';
 import { isPublicHttpsUrl } from '../security.js';
 
@@ -267,13 +269,15 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     '/api/admin/settings',
     { preHandler: requireAdmin },
     async () => {
-      const s = loadAlipaySettings();
+      const info = inspectAlipaySettings();
+      const s = info.settings;
       if (!s) {
         return {
           ok: true,
           configured: false,
+          unreadable: info.unreadable,
           settings: {
-            appId: '',
+            appId: info.appId,
             privateKeyMasked: '',
             alipayPublicKeyMasked: '',
             gateway: config.gateway,
@@ -286,6 +290,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       return {
         ok: true,
         configured: true,
+        unreadable: false,
         settings: {
           appId: s.appId,
           privateKeyMasked: maskSecret(s.privateKey),
@@ -357,7 +362,28 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
         },
         ip: clientIp(req),
       });
-      return { ok: true, configured: true };
+      const check = validateAlipayConfig();
+      return {
+        ok: true,
+        configured: true,
+        valid: check.ok,
+        warning: check.ok ? undefined : check.error,
+      };
+    },
+  );
+
+  /** 本地检测密钥格式，不向支付宝发起真实扣款。 */
+  app.post(
+    '/api/admin/settings/check',
+    { preHandler: requireAdmin },
+    async (_req, reply) => {
+      const check = validateAlipayConfig();
+      if (!check.ok) {
+        return reply
+          .code(400)
+          .send({ ok: false, error: check.error || '配置校验失败' });
+      }
+      return { ok: true, message: '配置校验通过，密钥格式正确' };
     },
   );
 

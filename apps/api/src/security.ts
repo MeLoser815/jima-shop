@@ -46,12 +46,92 @@ export function buildAutoNotifyUrl(
   protocol: string,
   hostHeader: string | undefined,
 ): string | undefined {
-  const host = (hostHeader ?? '').trim().split('/')[0];
+  const host = (hostHeader ?? '').trim().split('/')[0].split(',')[0].trim();
   if (!host) return undefined;
-  const proto = protocol.toLowerCase().replace(/:$/, '');
+  const proto = protocol.toLowerCase().replace(/:$/, '').split(',')[0].trim();
   if (proto !== 'https') return undefined;
   const url = `https://${host}/api/payment/notify`;
   return isPublicHttpsUrl(url) ? url : undefined;
+}
+
+export type RequestAccess = {
+  protocol: string;
+  host: string;
+  notifyUrl?: string;
+  /** 公网 HTTP（非 localhost）访问，无法自动登记支付宝回调 */
+  insecureHttp: boolean;
+};
+
+export const INSECURE_HTTP_PAY_HINT =
+  '当前不是通过 HTTPS 域名访问。请改用店铺的 HTTPS 地址打开后再支付，否则可能无法生成收款码。';
+
+function firstHeader(
+  headers: Record<string, unknown>,
+  name: string,
+): string {
+  const raw = headers[name];
+  if (Array.isArray(raw)) return String(raw[0] ?? '');
+  return raw == null ? '' : String(raw);
+}
+
+export function isLocalHostname(hostHeader: string | undefined): boolean {
+  const host = (hostHeader ?? '').trim().split('/')[0].split(',')[0].trim();
+  const hostname = host.split(':')[0].replace(/^\[|\]$/g, '').toLowerCase();
+  return (
+    !hostname ||
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '::1' ||
+    hostname === '0.0.0.0' ||
+    hostname.endsWith('.local') ||
+    hostname.endsWith('.localhost')
+  );
+}
+
+export function isInsecurePublicHttp(
+  protocol: string,
+  hostHeader: string | undefined,
+): boolean {
+  const proto = protocol.toLowerCase().replace(/:$/, '').split(',')[0].trim();
+  if (proto === 'https') return false;
+  return !isLocalHostname(hostHeader);
+}
+
+/** 从反代后的请求中识别协议、主机，并在公网 HTTPS 时拼回调地址。 */
+export function requestAccessFromRequest(req: {
+  protocol: string;
+  hostname?: string;
+  headers: Record<string, unknown>;
+}): RequestAccess {
+  const proto = (
+    firstHeader(req.headers, 'x-forwarded-proto') ||
+    req.protocol ||
+    ''
+  )
+    .split(',')[0]
+    .trim();
+  const host = (
+    firstHeader(req.headers, 'x-forwarded-host') ||
+    firstHeader(req.headers, 'host') ||
+    req.hostname ||
+    ''
+  )
+    .split(',')[0]
+    .trim();
+  return {
+    protocol: proto,
+    host,
+    notifyUrl: buildAutoNotifyUrl(proto, host),
+    insecureHttp: isInsecurePublicHttp(proto, host),
+  };
+}
+
+export function notifyUrlFromRequest(req: {
+  protocol: string;
+  hostname?: string;
+  headers: Record<string, unknown>;
+}): string | undefined {
+  return requestAccessFromRequest(req).notifyUrl;
 }
 
 

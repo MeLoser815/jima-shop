@@ -1,5 +1,7 @@
+import { createSign, createPublicKey } from 'node:crypto';
 import { AlipaySdk } from 'alipay-sdk';
 import {
+  inspectAlipaySettings,
   loadAlipaySettings,
   type AlipaySettings,
 } from './db.js';
@@ -37,29 +39,114 @@ export class AlipayConfigError extends Error {
   }
 }
 
-export function createSdk(settings?: AlipaySettings | null): AlipaySdk {
-  const s = settings ?? loadAlipaySettings();
-  if (!s) {
+export type AlipayAudience = 'buyer' | 'admin';
+
+export function alipayMissingConfigMessage(audience: AlipayAudience = 'admin'): string {
+  const info = inspectAlipaySettings();
+  if (audience === 'buyer') {
+    return '支付暂不可用，请稍后再试或联系商家';
+  }
+  if (info.unreadable) {
+    return '收款密钥无法读取，请在后台重新保存支付宝配置';
+  }
+  return '尚未配置支付宝：请在管理后台填写 AppId、应用私钥、支付宝公钥';
+}
+
+export function requireAlipaySettings(
+  audience: AlipayAudience = 'admin',
+): AlipaySettings {
+  const s = loadAlipaySettings();
+  if (s) return s;
+  throw new AlipayConfigError(alipayMissingConfigMessage(audience));
+}
+
+export function createSdk(
+  settings?: AlipaySettings | null,
+  audience: AlipayAudience = 'admin',
+): AlipaySdk {
+  const s = settings ?? requireAlipaySettings(audience);
+  try {
+    return new AlipaySdk({
+      appId: s.appId,
+      privateKey: normalizePrivateKey(s.privateKey),
+      alipayPublicKey: normalizePublicKey(s.alipayPublicKey),
+      gateway: s.gateway,
+      keyType: detectPrivateKeyType(s.privateKey),
+      signType: 'RSA2',
+      charset: 'utf-8',
+      timeout: 15000,
+    });
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
     throw new AlipayConfigError(
-      '尚未配置支付宝：请在管理后台填写 AppId、应用私钥、支付宝公钥',
+      audience === 'buyer'
+        ? '支付暂不可用，请稍后再试或联系商家'
+        : `支付宝密钥无法使用，请检查应用私钥与支付宝公钥是否填对（${detail}）`,
     );
   }
-  return new AlipaySdk({
-    appId: s.appId,
-    privateKey: normalizePrivateKey(s.privateKey),
-    alipayPublicKey: normalizePublicKey(s.alipayPublicKey),
-    gateway: s.gateway,
-    keyType: detectPrivateKeyType(s.privateKey),
-    signType: 'RSA2',
-    charset: 'utf-8',
-    timeout: 15000,
-  });
+}
+
+/** 本地校验密钥能否用于签名，不向支付宝发起真实扣款。 */
+export function validateAlipayConfig(settings?: AlipaySettings | null): {
+  ok: boolean;
+  error?: string;
+} {
+  try {
+    const s = settings ?? loadAlipaySettings();
+    if (!s) {
+      return { ok: false, error: alipayMissingConfigMessage('admin') };
+    }
+    const appId = s.appId.trim();
+    if (!/^\d{8,32}$/.test(appId)) {
+      return { ok: false, error: 'AppId 格式不正确，应为开放平台应用的数字 AppId' };
+    }
+    const privateKey = normalizePrivateKey(s.privateKey);
+    const publicKey = normalizePublicKey(s.alipayPublicKey);
+    createSign('RSA-SHA256').update('jima-alipay-config-check').sign(privateKey, 'base64');
+    createPublicKey(publicKey);
+    createSdk(s, 'admin');
+    return { ok: true };
+  } catch (err) {
+    if (err instanceof AlipayConfigError) {
+      return { ok: false, error: err.message };
+    }
+    return {
+      ok: false,
+      error: '密钥无法使用，请检查应用私钥与支付宝公钥是否填对、格式是否完整',
+    };
+  }
+}
+
+export function precreateFailureMessage(
+  result: AlipayBizResult,
+  opts?: { insecureHttp?: boolean },
+): string {
+  const raw = result.subMsg || result.msg || '生成收款码失败，请稍后重试';
+  const notifyRelated = /notify_url|异步通知|通知地址/i.test(
+    `${raw} ${result.subCode ?? ''}`,
+  );
+  if (notifyRelated || (opts?.insecureHttp && /undefined|invalid.*url/i.test(raw))) {
+    return '当前不是通过 HTTPS 域名访问，无法完成支付宝下单。请使用店铺的 HTTPS 地址打开后再支付。';
+  }
+  if (opts?.insecureHttp) {
+    return `${raw}。若仍无法支付，请改用店铺的 HTTPS 地址打开后再试。`;
+  }
+  return raw;
+}
+
+export function qrCodeFromResult(result: AlipayBizResult): string | undefined {
+  const qr = String(result.qrCode || '').trim();
+  return qr || undefined;
 }
 
 /**
  * 统一解析 SDK 返回：业务失败（含无签名的错误响应）明确返回，不伪装成网络错误。
  */
-function parseResult(raw: Record<string, unknown>): AlipayBizResult {
+export function parseResult(raw: Record<string, unknown>): AlipayBizResult {
+  const nested = raw.alipay_trade_precreate_response;
+  if (nested && typeof nested === 'object' && !raw.code && !raw.qr_code && !raw.qrCode) {
+    return parseResult(nested as Record<string, unknown>);
+  }
   const code = String(raw.code ?? raw.CODE ?? '');
   const msg = String(raw.msg ?? raw.MSG ?? '');
   const subCode = raw.subCode
@@ -122,15 +209,17 @@ export async function tradePrecreate(input: {
   body?: string;
   storeId?: string;
   notifyUrl?: string;
+  audience?: AlipayAudience;
 }): Promise<AlipayBizResult> {
-  const settings = loadAlipaySettings();
-  const notifyUrl = resolveNotifyUrl(settings?.notifyUrl, input.notifyUrl);
-  const sdk = createSdk(settings);
-  const storeId = input.storeId || settings!.storeId;
+  const audience = input.audience ?? 'admin';
+  const settings = requireAlipaySettings(audience);
+  const notifyUrl = resolveNotifyUrl(settings.notifyUrl, input.notifyUrl);
+  const sdk = createSdk(settings, audience);
+  const storeId = input.storeId || settings.storeId;
 
   try {
     const raw = (await sdk.exec('alipay.trade.precreate', {
-      notifyUrl,
+      ...(notifyUrl ? { notifyUrl } : {}),
       bizContent: {
         out_trade_no: input.outTradeNo,
         total_amount: input.totalAmount,
@@ -142,6 +231,7 @@ export async function tradePrecreate(input: {
     })) as Record<string, unknown>;
     return parseResult(raw);
   } catch (err) {
+    if (err instanceof AlipayConfigError) throw err;
     return coerceSdkError(err);
   }
 }
@@ -156,15 +246,17 @@ export async function tradePay(input: {
   authCode: string;
   storeId?: string;
   notifyUrl?: string;
+  audience?: AlipayAudience;
 }): Promise<AlipayBizResult> {
-  const settings = loadAlipaySettings();
-  const notifyUrl = resolveNotifyUrl(settings?.notifyUrl, input.notifyUrl);
-  const sdk = createSdk(settings);
-  const storeId = input.storeId || settings!.storeId;
+  const audience = input.audience ?? 'admin';
+  const settings = requireAlipaySettings(audience);
+  const notifyUrl = resolveNotifyUrl(settings.notifyUrl, input.notifyUrl);
+  const sdk = createSdk(settings, audience);
+  const storeId = input.storeId || settings.storeId;
 
   try {
     const raw = (await sdk.exec('alipay.trade.pay', {
-      notifyUrl,
+      ...(notifyUrl ? { notifyUrl } : {}),
       bizContent: {
         out_trade_no: input.outTradeNo,
         total_amount: input.totalAmount,
@@ -176,13 +268,14 @@ export async function tradePay(input: {
     })) as Record<string, unknown>;
     return parseResult(raw);
   } catch (err) {
+    if (err instanceof AlipayConfigError) throw err;
     return coerceSdkError(err);
   }
 }
 
 /** 交易查询 alipay.trade.query */
 export async function tradeQuery(outTradeNo: string): Promise<AlipayBizResult> {
-  const sdk = createSdk();
+  const sdk = createSdk(undefined, 'admin');
   try {
     const raw = (await sdk.exec('alipay.trade.query', {
       bizContent: { out_trade_no: outTradeNo },

@@ -32,14 +32,21 @@ export default function Settings() {
   const { message } = App.useApp();
   const [form] = Form.useForm<FormVals>();
   const [configured, setConfigured] = useState(false);
+  const [unreadable, setUnreadable] = useState(false);
   const [masked, setMasked] = useState({ priv: '', pub: '' });
   const [busy, setBusy] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [feedback, setFeedback] = useState<{
+    type: 'success' | 'error' | 'warning';
+    text: string;
+  } | null>(null);
 
   useEffect(() => {
     api
       .getSettings()
       .then((res) => {
         setConfigured(res.configured);
+        setUnreadable(Boolean(res.unreadable));
         setMasked({
           priv: res.settings.privateKeyMasked,
           pub: res.settings.alipayPublicKeyMasked,
@@ -60,8 +67,9 @@ export default function Settings() {
   async function save() {
     const v = await form.validateFields();
     setBusy(true);
+    setFeedback(null);
     try {
-      await api.saveSettings({
+      const saved = await api.saveSettings({
         appId: v.appId,
         privateKey: v.privateKey || '',
         alipayPublicKey: v.alipayPublicKey || '',
@@ -70,18 +78,46 @@ export default function Settings() {
         sellerId: v.sellerId,
         notifyUrl: v.notifyUrl,
       });
-      message.success('收款配置已保存');
       const res = await api.getSettings();
       setConfigured(res.configured);
+      setUnreadable(Boolean(res.unreadable));
       setMasked({
         priv: res.settings.privateKeyMasked,
         pub: res.settings.alipayPublicKeyMasked,
       });
       form.setFieldsValue({ privateKey: '', alipayPublicKey: '' });
+      if (saved.warning) {
+        const text = `配置已保存，但校验未通过：${saved.warning}`;
+        setFeedback({ type: 'warning', text });
+        message.warning(text);
+      } else {
+        const text = '收款配置已保存';
+        setFeedback({ type: 'success', text });
+        message.success(text);
+      }
     } catch (e) {
-      message.error((e as Error).message);
+      const text = (e as Error).message || '保存失败，请稍后重试';
+      setFeedback({ type: 'error', text });
+      message.error(text);
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function checkConfig() {
+    setChecking(true);
+    setFeedback(null);
+    try {
+      const res = await api.checkSettings();
+      const text = res.message || '配置校验通过，密钥格式正确';
+      setFeedback({ type: 'success', text });
+      message.success(text);
+    } catch (e) {
+      const text = (e as Error).message || '配置校验失败';
+      setFeedback({ type: 'error', text });
+      message.error(text);
+    } finally {
+      setChecking(false);
     }
   }
 
@@ -91,7 +127,14 @@ export default function Settings() {
       <Typography.Paragraph type="secondary">
         在此填写 AppId、应用私钥（商户密钥）和支付宝公钥（商户 key）即可收款。站点用 HTTPS 域名访问时，系统会按当前域名自动设置支付宝回调地址，一般不必再填。
       </Typography.Paragraph>
-      {configured ? (
+      {unreadable ? (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="已保存的密钥无法读取，请重新填写并保存支付宝配置"
+        />
+      ) : configured ? (
         <Alert
           type="success"
           showIcon
@@ -105,6 +148,14 @@ export default function Settings() {
           showIcon
           style={{ marginBottom: 16 }}
           message="尚未配置，店铺暂时无法收款"
+        />
+      )}
+      {feedback && (
+        <Alert
+          type={feedback.type}
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={feedback.text}
         />
       )}
       <Form form={form} layout="vertical" onFinish={save}>
@@ -160,6 +211,15 @@ export default function Settings() {
         </Form.Item>
         <Button type="primary" htmlType="submit" className="candy-btn" loading={busy} size="large">
           保存配置
+        </Button>
+        <Button
+          style={{ marginLeft: 12 }}
+          loading={checking}
+          disabled={busy}
+          onClick={() => void checkConfig()}
+          size="large"
+        >
+          检测配置
         </Button>
       </Form>
     </div>

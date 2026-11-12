@@ -4,11 +4,13 @@ import { z } from 'zod';
 import {
   AlipayConfigError,
   checkNotifySign,
+  precreateFailureMessage,
+  qrCodeFromResult,
   tradePay,
   tradePrecreate,
   tradeQuery,
 } from '../alipay.js';
-import { buildAutoNotifyUrl } from '../security.js';
+import { notifyUrlFromRequest } from '../security.js';
 import { createOrder, getOrderByOutTradeNo, updateOrder } from '../db.js';
 import { getPublicOrderView } from '../cardKeys.js';
 import { requireAdmin } from '../middleware/auth.js';
@@ -65,23 +67,23 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
           totalAmount: parsed.data.amount,
           subject: parsed.data.subject,
           body: parsed.data.body,
-          notifyUrl: buildAutoNotifyUrl(
-            req.protocol,
-            String(req.headers.host || req.hostname || ''),
-          ),
+          notifyUrl: notifyUrlFromRequest(req),
         });
 
-        if (!result.ok) {
+        const qrCode = result.ok ? qrCodeFromResult(result) : undefined;
+        if (!result.ok || !qrCode) {
           updateOrder(outTradeNo, { status: 'FAILED' });
           return reply.code(400).send({
             ok: false,
-            error: result.subMsg || result.msg || '预下单失败',
+            error: result.ok
+              ? '未能生成收款码，请稍后重试'
+              : precreateFailureMessage(result),
             code: result.code,
             subCode: result.subCode,
           });
         }
 
-        updateOrder(outTradeNo, { qr_code: result.qrCode ?? undefined });
+        updateOrder(outTradeNo, { qr_code: qrCode });
         const updated = getOrderByOutTradeNo(outTradeNo) ?? order;
 
         return {
@@ -139,10 +141,7 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
           totalAmount: parsed.data.amount,
           subject: parsed.data.subject,
           authCode: parsed.data.authCode,
-          notifyUrl: buildAutoNotifyUrl(
-            req.protocol,
-            String(req.headers.host || req.hostname || ''),
-          ),
+          notifyUrl: notifyUrlFromRequest(req),
         });
 
         if (!result.ok) {

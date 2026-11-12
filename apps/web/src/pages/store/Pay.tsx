@@ -24,6 +24,27 @@ type PayOrder = {
   status: string;
 };
 
+const HTTP_PAY_HINT =
+  '当前不是通过 HTTPS 域名访问。请改用店铺的 HTTPS 地址打开后再支付，否则可能无法生成收款码。';
+
+function isInsecurePublicHttp(): boolean {
+  if (typeof window === 'undefined') return false;
+  if (window.location.protocol === 'https:') return false;
+  const host = window.location.hostname.toLowerCase();
+  return !(
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host === '::1' ||
+    host.endsWith('.local') ||
+    host.endsWith('.localhost')
+  );
+}
+
+function errorText(err: unknown): string {
+  const msg = err instanceof Error ? err.message.trim() : '';
+  return msg || '生成收款码失败，请稍后重试';
+}
+
 export default function PayPage() {
   const cart = useCart();
   const nav = useNavigate();
@@ -33,7 +54,25 @@ export default function PayPage() {
   const [order, setOrder] = useState<PayOrder | null>(null);
   const [paid, setPaid] = useState(false);
   const [paidOrder, setPaidOrder] = useState<PublicOrder | null>(null);
+  const [payError, setPayError] = useState('');
+  const [httpHint, setHttpHint] = useState(
+    isInsecurePublicHttp() ? HTTP_PAY_HINT : '',
+  );
+  const [alipayReady, setAlipayReady] = useState<boolean | null>(null);
   const cleared = useRef(false);
+
+  useEffect(() => {
+    api
+      .getStorePayment()
+      .then((res) => {
+        setAlipayReady(res.alipayConfigured);
+        if (res.insecureHttp && res.hint) setHttpHint(res.hint);
+        else if (res.insecureHttp) setHttpHint(HTTP_PAY_HINT);
+      })
+      .catch(() => {
+        /* 状态查询失败时仍允许点击下单，由下单接口返回明确错误 */
+      });
+  }, []);
 
   useEffect(() => {
     if (!order || paid) return;
@@ -63,6 +102,7 @@ export default function PayPage() {
       nav('/cart');
       return;
     }
+    setPayError('');
     setBusy(true);
     try {
       const res = await api.checkout({
@@ -72,16 +112,22 @@ export default function PayPage() {
         })),
         buyerNote: note.trim() || undefined,
       });
+      const qrCode = res.order?.qrCode?.trim() || '';
+      if (!qrCode) {
+        throw new Error('未能生成收款码，请稍后重试或联系商家');
+      }
       setOrder({
         outTradeNo: res.order.outTradeNo,
         totalAmount: res.order.totalAmount,
         subject: res.order.subject,
-        qrCode: res.order.qrCode,
+        qrCode,
         status: res.order.status,
       });
       message.success('已生成收款码，请使用支付宝扫码');
     } catch (e) {
-      message.error((e as Error).message);
+      const text = errorText(e);
+      setPayError(text);
+      message.error(text);
     } finally {
       setBusy(false);
     }
@@ -179,20 +225,31 @@ export default function PayPage() {
             value={note}
             onChange={(e) => setNote(e.target.value)}
           />
-          <Alert
-            type="info"
-            showIcon
-            message="将调用后台配置的支付宝当面付生成收款码。请先在管理后台填写 AppId 与密钥。"
-          />
+          {alipayReady === false && (
+            <Alert
+              type="warning"
+              showIcon
+              message="商家暂未开通在线支付，请稍后再试或联系商家"
+            />
+          )}
+          {httpHint && (
+            <Alert type="warning" showIcon message={httpHint} />
+          )}
+          {payError && (
+            <Alert type="error" showIcon message={payError} />
+          )}
+          {!httpHint && alipayReady !== false && !payError && (
+            <Alert type="info" showIcon message="请使用支付宝扫码完成支付。点击下方按钮生成收款码。" />
+          )}
           <Button
             type="primary"
             size="large"
             block
             className="candy-btn"
             loading={busy}
-            onClick={startPay}
+            onClick={() => void startPay()}
           >
-            支付宝当面付下单
+            生成支付宝收款码
           </Button>
         </Space>
       )}

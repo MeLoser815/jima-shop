@@ -96,6 +96,21 @@ export type ThemePreset = {
   description: string;
 };
 
+const GENERIC_HTTP_ERROR =
+  /^(Internal Server Error|Bad Request|Not Found|Unauthorized|Forbidden)$/i;
+
+export function readApiErrorMessage(data: unknown, status: number): string {
+  if (data && typeof data === 'object') {
+    const d = data as { error?: unknown; message?: unknown };
+    const err = typeof d.error === 'string' ? d.error.trim() : '';
+    const msg = typeof d.message === 'string' ? d.message.trim() : '';
+    if (err && !GENERIC_HTTP_ERROR.test(err)) return err;
+    if (msg && !GENERIC_HTTP_ERROR.test(msg)) return msg;
+  }
+  if (!status) return '网络异常，请检查网络后重试';
+  return `请求失败，请稍后重试（${status}）`;
+}
+
 async function request<T>(
   path: string,
   init: RequestInit & { auth?: boolean } = {},
@@ -108,17 +123,31 @@ async function request<T>(
     const t = getToken();
     if (t) headers.set('Authorization', `Bearer ${t}`);
   }
-  const res = await fetch(path, { ...init, headers });
+  let res: Response;
+  try {
+    res = await fetch(path, {
+      ...init,
+      headers,
+      signal: init.signal ?? AbortSignal.timeout(30000),
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (/timeout|aborted|AbortError|TimeoutError/i.test(msg)) {
+      throw new Error('请求超时，请稍后重试');
+    }
+    throw new Error('网络异常，请检查网络后重试');
+  }
   const data = (await res.json().catch(() => ({}))) as T & {
     ok?: boolean;
     error?: string;
     needsSetup?: boolean;
   };
-  if (!res.ok) {
-    const err = new Error(
-      (data as { error?: string }).error || `请求失败 (${res.status})`,
-    ) as Error & { needsSetup?: boolean; status?: number };
-    err.needsSetup = (data as { needsSetup?: boolean }).needsSetup;
+  if (!res.ok || data.ok === false) {
+    const err = new Error(readApiErrorMessage(data, res.status)) as Error & {
+      needsSetup?: boolean;
+      status?: number;
+    };
+    err.needsSetup = data.needsSetup;
     err.status = res.status;
     throw err;
   }
@@ -211,10 +240,20 @@ export const api = {
       auth: true,
     });
   },
+  getStorePayment() {
+    return request<{
+      ok: boolean;
+      alipayConfigured: boolean;
+      notifyEnabled?: boolean;
+      insecureHttp?: boolean;
+      hint?: string;
+    }>('/api/store/payment');
+  },
   getSettings() {
     return request<{
       ok: boolean;
       configured: boolean;
+      unreadable?: boolean;
       settings: {
         appId: string;
         privateKeyMasked: string;
@@ -235,11 +274,22 @@ export const api = {
     sellerId?: string;
     notifyUrl?: string;
   }) {
-    return request<{ ok: boolean }>('/api/admin/settings', {
+    return request<{
+      ok: boolean;
+      configured?: boolean;
+      valid?: boolean;
+      warning?: string;
+    }>('/api/admin/settings', {
       method: 'PUT',
       auth: true,
       body: JSON.stringify(body),
     });
+  },
+  checkSettings() {
+    return request<{ ok: boolean; message?: string }>(
+      '/api/admin/settings/check',
+      { method: 'POST', auth: true },
+    );
   },
   dashboard() {
     return request<{

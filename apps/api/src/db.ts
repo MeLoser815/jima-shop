@@ -533,24 +533,49 @@ export function saveAlipaySettings(input: {
   if (input.sellerId !== undefined) setSetting('seller_id', input.sellerId.trim());
 }
 
-export function loadAlipaySettings(): AlipaySettings | null {
-  const appId = getSetting('app_id');
+export type AlipaySettingsInspection = {
+  /** 三项密钥均已保存且可解密 */
+  configured: boolean;
+  /** 库中有密钥记录，但无法解密（例如加密密钥已变更） */
+  unreadable: boolean;
+  appId: string;
+  settings: AlipaySettings | null;
+};
+
+/** 读取支付宝配置；解密失败时不抛错，以便后台仍可重新保存。 */
+export function inspectAlipaySettings(): AlipaySettingsInspection {
+  const appId = getSetting('app_id') || '';
   const privEnc = getSetting('private_key_enc');
   const pubEnc = getSetting('alipay_public_key_enc');
-  if (!appId || !privEnc || !pubEnc) return null;
-  return {
-    appId,
-    privateKey: decrypt(privEnc, config.encryptionKey),
-    alipayPublicKey: decrypt(pubEnc, config.encryptionKey),
-    gateway: getSetting('gateway') || config.gateway,
-    storeId: getSetting('store_id') || '',
-    notifyUrl: getSetting('notify_url') || config.notifyUrl,
-    sellerId: getSetting('seller_id') || '',
-  };
+  if (!appId || !privEnc || !pubEnc) {
+    return { configured: false, unreadable: false, appId, settings: null };
+  }
+  try {
+    return {
+      configured: true,
+      unreadable: false,
+      appId,
+      settings: {
+        appId,
+        privateKey: decrypt(privEnc, config.encryptionKey),
+        alipayPublicKey: decrypt(pubEnc, config.encryptionKey),
+        gateway: getSetting('gateway') || config.gateway,
+        storeId: getSetting('store_id') || '',
+        notifyUrl: getSetting('notify_url') || config.notifyUrl,
+        sellerId: getSetting('seller_id') || '',
+      },
+    };
+  } catch {
+    return { configured: false, unreadable: true, appId, settings: null };
+  }
+}
+
+export function loadAlipaySettings(): AlipaySettings | null {
+  return inspectAlipaySettings().settings;
 }
 
 export function settingsConfigured(): boolean {
-  return Boolean(getSetting('app_id') && getSetting('private_key_enc'));
+  return inspectAlipaySettings().configured;
 }
 
 export function createOrder(input: {

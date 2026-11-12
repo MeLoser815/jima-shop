@@ -105,7 +105,7 @@ export default function PalaceHome({
                   {lead.name}
                 </Typography.Title>
                 <Typography.Paragraph className="palace-editorial-desc">
-                  {lead.description || '云上精选 · 当面付即纳'}
+                  {lead.description || '云上精选 · 支付宝即纳'}
                 </Typography.Paragraph>
                 <div className="palace-editorial-foot">
                   <span className="price">¥{lead.price}</span>

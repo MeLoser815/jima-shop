@@ -1,9 +1,19 @@
 import type { FastifyInstance } from 'fastify';
 import { customAlphabet } from 'nanoid';
 import { z } from 'zod';
-import { AlipayConfigError, tradePrecreate, tradeQuery } from '../alipay.js';
-import { buildAutoNotifyUrl } from '../security.js';
-import { getOrderByOutTradeNo, updateOrder } from '../db.js';
+import {
+  AlipayConfigError,
+  precreateFailureMessage,
+  qrCodeFromResult,
+  tradePrecreate,
+  tradeQuery,
+} from '../alipay.js';
+import {
+  INSECURE_HTTP_PAY_HINT,
+  notifyUrlFromRequest,
+  requestAccessFromRequest,
+} from '../security.js';
+import { getOrderByOutTradeNo, settingsConfigured, updateOrder } from '../db.js';
 import {
   createReservedCheckoutOrder,
   getPublicOrderView,
@@ -48,6 +58,18 @@ async function maybeRefreshFromAlipay(outTradeNo: string): Promise<void> {
 }
 
 export async function storeRoutes(app: FastifyInstance): Promise<void> {
+  /** 前台公开：是否已配置支付宝，不返回任何密钥。 */
+  app.get('/api/store/payment', async (req) => {
+    const access = requestAccessFromRequest(req);
+    return {
+      ok: true,
+      alipayConfigured: settingsConfigured(),
+      notifyEnabled: Boolean(access.notifyUrl),
+      insecureHttp: access.insecureHttp,
+      hint: access.insecureHttp ? INSECURE_HTTP_PAY_HINT : undefined,
+    };
+  });
+
   /**
    * 购物车结账：先写本地订单并预占卡密，再向支付宝预下单。
    */
@@ -97,24 +119,27 @@ export async function storeRoutes(app: FastifyInstance): Promise<void> {
           totalAmount: reserved.totalAmount,
           subject,
           body: lines.map((l) => `${l.productName}x${l.quantity}`).join(', '),
-          notifyUrl: buildAutoNotifyUrl(
-            req.protocol,
-            String(req.headers.host || req.hostname || ''),
-          ),
+          notifyUrl: notifyUrlFromRequest(req),
+          audience: 'buyer',
         });
 
-        if (!result.ok) {
+        const qrCode = result.ok ? qrCodeFromResult(result) : undefined;
+        if (!result.ok || !qrCode) {
           updateOrder(outTradeNo, { status: 'FAILED' });
           releaseReservationsForOrder(orderId);
           return reply.code(400).send({
             ok: false,
-            error: result.subMsg || result.msg || '预下单失败',
+            error: result.ok
+              ? '未能生成收款码，请稍后重试或联系商家'
+              : precreateFailureMessage(result, {
+                  insecureHttp: requestAccessFromRequest(req).insecureHttp,
+                }),
             code: result.code,
             subCode: result.subCode,
           });
         }
 
-        updateOrder(outTradeNo, { qr_code: result.qrCode ?? undefined });
+        updateOrder(outTradeNo, { qr_code: qrCode });
         const order = getOrderByOutTradeNo(outTradeNo)!;
 
         return {

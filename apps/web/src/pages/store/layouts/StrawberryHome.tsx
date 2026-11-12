@@ -53,8 +53,8 @@ export default function StrawberryHome({
               <span>精选分类</span>
             </div>
             <div className="hero-stat">
-              <b>当面付</b>
-              <span>秒速出码</span>
+              <b>支付宝</b>
+              <span>扫码即付</span>
             </div>
           </div>
         </div>

@@ -103,7 +103,7 @@ function StoreShell({ children }: { children: ReactNode }) {
         <div className={`app-content content-${theme.id}`}>{children}</div>
       </Content>
       <Footer className={`page-footer footer-${theme.id}`} style={{ background: 'transparent' }}>
-        即码小店 · {theme.name} · 支付宝当面付
+        即码小店 · {theme.name} · 支持支付宝
       </Footer>
       <nav className={`mobile-bottom-nav mobile-nav-${theme.id}`} aria-label="底部导航">
         <Link to="/" className={homeActive ? 'active' : ''}>

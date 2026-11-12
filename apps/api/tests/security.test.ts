@@ -39,6 +39,9 @@ const {
   getAdminByUsername,
   revokeAdminSessionsForUser,
   revokeAdminSession,
+  getAdminBasePath,
+  isAdminBasePathEnvLocked,
+  updateAdminBasePath,
 } = await import('../src/db.js');
 const { issueAdminAuth, authenticateAdminToken } = await import(
   '../src/middleware/auth.js'
@@ -296,5 +299,31 @@ describe('admin session issue / revoke', () => {
     assert.equal(ok.ok, true); // new format still works
     const raw = Buffer.from('1000.alice.deadbeefsig', 'utf8').toString('base64url');
     assert.equal(verifyAdminToken(raw, config.sessionSecret).ok, false);
+  });
+});
+
+describe('admin base path setting', () => {
+  const previousEnv = process.env.ADMIN_BASE_PATH;
+  after(() => {
+    if (previousEnv === undefined) delete process.env.ADMIN_BASE_PATH;
+    else process.env.ADMIN_BASE_PATH = previousEnv;
+  });
+
+  it('persists a custom path and respects an environment lock', () => {
+    delete process.env.ADMIN_BASE_PATH;
+    assert.equal(isAdminBasePathEnvLocked(), false);
+    const initial = getAdminBasePath();
+    assert.ok(initial === '/admin' || initial.startsWith('/'));
+    assert.equal(updateAdminBasePath('shop-manage'), '/shop-manage');
+    assert.equal(getAdminBasePath(), '/shop-manage');
+    assert.throws(() => updateAdminBasePath('/api'), /保留路径/);
+    assert.equal(getAdminBasePath(), '/shop-manage');
+
+    process.env.ADMIN_BASE_PATH = '/from-env';
+    assert.equal(isAdminBasePathEnvLocked(), true);
+    assert.equal(getAdminBasePath(), '/from-env');
+    assert.throws(() => updateAdminBasePath('/new-path'), /环境变量/);
+    delete process.env.ADMIN_BASE_PATH;
+    assert.equal(getAdminBasePath(), '/shop-manage');
   });
 });

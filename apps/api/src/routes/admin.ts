@@ -16,6 +16,10 @@ import {
   revokeAdminSession,
   revokeAdminSessionsForUser,
   updateAdminPassword,
+  getAdminBasePath,
+  isAdminBasePathEnvLocked,
+  updateAdminBasePath,
+  AdminBasePathError,
 } from '../db.js';
 import { attachKeysToOrders, fulfillPendingOrder } from '../cardKeys.js';
 import { issueAdminAuth, requireAdmin } from '../middleware/auth.js';
@@ -208,6 +212,48 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       ok: true,
       username: req.adminUsername,
     }),
+  );
+
+  app.get(
+    '/api/admin/admin-path',
+    { preHandler: requireAdmin },
+    async () => ({
+      ok: true,
+      path: getAdminBasePath(),
+      envLocked: isAdminBasePathEnvLocked(),
+    }),
+  );
+
+  app.put(
+    '/api/admin/admin-path',
+    { preHandler: requireAdmin },
+    async (req, reply) => {
+      const parsed = z
+        .object({ path: z.string().min(1, '请填写后台路径') })
+        .safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({
+          ok: false,
+          error: parsed.error.issues.map((i) => i.message).join('; '),
+        });
+      }
+      try {
+        const path = updateAdminBasePath(parsed.data.path);
+        logAudit({
+          actor: req.adminUsername || 'admin',
+          action: 'admin.change_path',
+          detail: { path },
+          ip: clientIp(req),
+        });
+        return { ok: true, path, envLocked: false };
+      } catch (err) {
+        const message = err instanceof Error ? err.message : '后台路径无效';
+        if (err instanceof AdminBasePathError || /ADMIN_BASE_PATH|保留路径|根路径|必须是单个路径段/.test(message)) {
+          return reply.code(400).send({ ok: false, error: message });
+        }
+        throw err;
+      }
+    },
   );
 
   app.get(

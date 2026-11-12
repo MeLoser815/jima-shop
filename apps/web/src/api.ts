@@ -148,6 +148,18 @@ export const api = {
       auth: true,
     });
   },
+  getAdminPath() {
+    return request<{ ok: boolean; path: string; envLocked: boolean }>(
+      '/api/admin/admin-path',
+      { auth: true },
+    );
+  },
+  updateAdminPath(path: string) {
+    return request<{ ok: boolean; path: string; envLocked: boolean }>(
+      '/api/admin/admin-path',
+      { method: 'PUT', auth: true, body: JSON.stringify({ path }) },
+    );
+  },
   changePassword(currentPassword: string, newPassword: string) {
     return request<{ ok: boolean; needRelogin?: boolean }>('/api/admin/change-password', {
       method: 'POST',

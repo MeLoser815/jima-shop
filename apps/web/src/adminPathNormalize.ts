@@ -1,4 +1,4 @@
-/** 开源默认后台路径。可用环境变量 ADMIN_BASE_PATH 覆盖。 */
+/** 开源默认后台路径。可在管理后台修改，或用环境变量 ADMIN_BASE_PATH 锁定。 */
 export const DEFAULT_ADMIN_BASE_PATH = '/admin';
 
 const RESERVED_SEGMENTS = new Set([

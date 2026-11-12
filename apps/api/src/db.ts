@@ -11,6 +11,7 @@ import {
 } from './utils/cardSecret.js';
 import { yuanToFen, fenToYuan } from './money.js';
 import { DEFAULT_THEME_ID, isValidThemeId, normalizeThemeId, THEME_PRESETS } from './themes.js';
+import { DEFAULT_ADMIN_BASE_PATH, normalizeAdminBasePath } from './adminPath.js';
 
 export type AlipaySettings = {
   appId: string;
@@ -469,6 +470,42 @@ function setSetting(key: string, value: string): void {
        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
     )
     .run(key, value);
+}
+
+
+export function isAdminBasePathEnvLocked(): boolean {
+  return Boolean(process.env.ADMIN_BASE_PATH?.trim());
+}
+
+/** 后台前端路径：环境变量优先，否则使用后台保存的值，默认 /admin。 */
+export function getAdminBasePath(): string {
+  const fromEnv = process.env.ADMIN_BASE_PATH?.trim();
+  if (fromEnv) {
+    return normalizeAdminBasePath(fromEnv, { strict: true });
+  }
+  const fromDb = getSetting('admin_base_path')?.trim();
+  if (fromDb) {
+    return normalizeAdminBasePath(fromDb, { strict: true });
+  }
+  return DEFAULT_ADMIN_BASE_PATH;
+}
+
+export class AdminBasePathError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'AdminBasePathError';
+  }
+}
+
+export function updateAdminBasePath(raw: string): string {
+  if (isAdminBasePathEnvLocked()) {
+    throw new AdminBasePathError(
+      '当前后台路径由环境变量 ADMIN_BASE_PATH 锁定，请修改该变量后重启服务。',
+    );
+  }
+  const value = normalizeAdminBasePath(raw, { strict: true });
+  setSetting('admin_base_path', value);
+  return value;
 }
 
 export function saveAlipaySettings(input: {

@@ -11,7 +11,7 @@ import bcrypt from 'bcryptjs';
 import { injectAdminBasePath } from './adminPath.js';
 import { config } from './config.js';
 import { assertProductionConfig } from './security.js';
-import { createFirstAdminUser, getDb, needsAdminSetup } from './db.js';
+import { createFirstAdminUser, getAdminBasePath, getDb, needsAdminSetup } from './db.js';
 import { startReservationReleaser } from './cardKeys.js';
 import { adminRoutes } from './routes/admin.js';
 import { paymentRoutes } from './routes/payment.js';
@@ -108,7 +108,7 @@ async function main() {
         const html = fs.readFileSync(indexFile, 'utf8');
         return reply
           .type('text/html; charset=utf-8')
-          .send(injectAdminBasePath(html, config.adminBasePath));
+          .send(injectAdminBasePath(html, getAdminBasePath()));
       };
       app.setNotFoundHandler((req, reply) => {
         if (req.method !== 'GET' && req.method !== 'HEAD') {

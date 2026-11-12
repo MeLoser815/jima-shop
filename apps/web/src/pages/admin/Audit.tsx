@@ -17,6 +17,7 @@ const ACTION_LABEL: Record<string, string> = {
   'admin.login_failed': '登录失败',
   'admin.logout': '退出登录',
   'admin.change_password': '修改密码',
+  'admin.change_path': '修改后台路径',
   'settings.update': '更新支付宝设置',
   'keys.import': '导入卡密',
   'order.fulfill': '订单补发',

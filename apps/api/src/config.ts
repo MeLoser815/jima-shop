@@ -48,7 +48,7 @@ export const config = {
   webOrigin:
     process.env.WEB_ORIGIN ?? (isProd ? '' : 'http://localhost:5173'),
   nodeEnv: process.env.NODE_ENV ?? 'development',
-  /** 管理后台前端路径，默认 /admin。生产与开发均可通过 ADMIN_BASE_PATH 覆盖。 */
+  /** 环境变量中的后台路径（若设置则锁定，优先于后台保存的值）。 */
   adminBasePath: normalizeAdminBasePath(process.env.ADMIN_BASE_PATH, {
     strict: true,
   }),

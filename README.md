@@ -56,7 +56,7 @@ services:
     container_name: jima-shop
     restart: unless-stopped
     ports:
-      - "3001:3001"
+      - "3333:3001"
     environment:
       - TZ=Asia/Shanghai
       - NODE_ENV=production
@@ -64,13 +64,13 @@ services:
       - ./data:/data
 ```
 
-启动后访问 `http://服务器地址:3001` 打开店铺，访问 `http://服务器地址:3001/admin` 创建管理员账号。随后在后台「支付宝收款」中填写 AppId、应用私钥、支付宝公钥，以及公网 HTTPS 异步通知地址（例如 `https://你的域名/api/payment/notify`）。收款相关配置均在后台完成，不必写入 Compose。
+启动后访问 `http://服务器地址:3333` 打开店铺，访问 `http://服务器地址:3333/admin` 创建管理员账号。随后在后台「账号安全」中修改后台访问路径（默认 `/admin` 较容易被扫描），并在「支付宝收款」中填写 AppId、应用私钥、支付宝公钥，以及公网 HTTPS 异步通知地址（例如 `https://你的域名/api/payment/notify`）。收款与后台路径均可在后台完成，不必写入 Compose。
 
 数据（含数据库，以及未手动指定时自动生成的会话密钥与加密密钥）保存在当前目录的 `./data` 中，请将该目录纳入备份。同一数据目录只运行一个实例。
 
 对外收款前，请为站点配置域名和 HTTPS，再在后台填写对应的异步通知地址。未配置公网通知地址时，服务可以启动，但不能发起收款。
 
-可选环境变量：`ADMIN_BASE_PATH`（后台路径，默认 `/admin`）、`SESSION_SECRET`、`SETTINGS_ENCRYPTION_KEY`（若自行指定，请使用足够长的随机串，且部署后不要更换加密密钥）、`WEB_ORIGIN`、`ALIPAY_NOTIFY_URL`（亦可在后台填写通知地址）。不要将占位示例值写入密钥变量。
+可选环境变量：`ADMIN_BASE_PATH`（若设置，将锁定后台路径且优先于后台中的修改；未设置时默认 `/admin`，可在后台「账号安全」中更改）、`SESSION_SECRET`、`SETTINGS_ENCRYPTION_KEY`（若自行指定，请使用足够长的随机串，且部署后不要更换加密密钥）、`WEB_ORIGIN`、`ALIPAY_NOTIFY_URL`（亦可在后台填写通知地址）。不要将占位示例值写入密钥变量。
 
 若无法拉取镜像，可在本仓库根目录执行：
 
@@ -93,7 +93,7 @@ pnpm dev
 ```
 
 - 店铺前台：http://localhost:5173/
-- 管理后台：http://localhost:5173/admin（默认路径，可用 `ADMIN_BASE_PATH` 修改）
+- 管理后台：http://localhost:5173/admin（默认路径；生产环境可在后台「账号安全」中修改，本地开发也可用 `ADMIN_BASE_PATH` 覆盖）
 - API：http://localhost:3001
 
 开发环境默认会写入示例分类、商品和 `DEMO-` 前缀演示卡密。若不需要演示数据，在环境变量中设置 `JIMA_SEED_DEMO=0` 后再以空的 `DATABASE_PATH` 启动。
@@ -109,7 +109,7 @@ NODE_ENV=production pnpm start
 NODE_ENV=production pnpm start:prod
 ```
 
-生产模式下 API 会托管 `apps/web/dist`，将反代指到 API 端口即可。`ADMIN_BASE_PATH` 会在运行时注入页面；更改路径后重新启动服务。
+生产模式下 API 会托管 `apps/web/dist`，将反代指到 API 端口即可。后台路径会在运行时注入页面；在后台修改后立即生效，无需重启。若使用环境变量 `ADMIN_BASE_PATH`，则以其为准，需重启后生效。
 
 若使用 PM2，请使用 fork 模式且 `instances=1`，不要开启 cluster。
 
@@ -137,7 +137,7 @@ NODE_ENV=production pnpm start:prod
 | `/cart` | 购物车 |
 | `/pay` | 确认订单 / 收款码 |
 | `/order`、`/query` | 查单 |
-| `/admin` | 仪表盘（默认后台路径，可用 `ADMIN_BASE_PATH` 修改） |
+| `/admin` | 仪表盘（默认后台路径，可在「账号安全」中修改） |
 | `/admin/products` | 商品管理 / 卡密货源 |
 | `/admin/categories` | 分类管理 |
 | `/admin/orders` | 订单（含补发） |
@@ -145,7 +145,7 @@ NODE_ENV=production pnpm start:prod
 | `/admin/audit` | 操作日志 |
 | `/admin/appearance` | 风格模板 |
 | `/admin/settings` | 支付宝配置 |
-| `/admin/account` | 账号安全 |
+| `/admin/account` | 账号安全（含后台路径） |
 
 买家支付轮询只走公开查单接口。`/api/payment/precreate`、`/api/payment/pay` 仅管理员可用。
 

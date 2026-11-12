@@ -202,11 +202,17 @@ export const api = {
       auth: true,
     });
   },
-  listAudit(page = 1, pageSize = 15) {
+  listAudit(
+    page = 1,
+    pageSize = 15,
+    opts?: { q?: string; action?: string },
+  ) {
     const q = new URLSearchParams({
       page: String(page),
       pageSize: String(pageSize),
     });
+    if (opts?.q) q.set('q', opts.q);
+    if (opts?.action) q.set('action', opts.action);
     return request<{
       ok: boolean;
       logs: Array<{
@@ -301,12 +307,35 @@ export const api = {
         orderCount: number;
         paidCount: number;
         paidAmount: string;
+        pendingFulfillmentCount?: number;
       };
     }>('/api/admin/dashboard', { auth: true });
   },
-  listOrders() {
+  listOrders(opts?: {
+    q?: string;
+    payStatus?: 'all' | 'paid' | 'pending' | 'closed';
+    fulfillment?: 'all' | 'pending_fulfillment' | 'delivered' | 'none';
+    sortBy?: 'created_at' | 'total_amount' | 'status' | 'subject' | 'id';
+    sortOrder?: 'asc' | 'desc';
+    page?: number;
+    pageSize?: number;
+  }) {
+    const q = new URLSearchParams();
+    if (opts?.q) q.set('q', opts.q);
+    if (opts?.payStatus && opts.payStatus !== 'all') q.set('payStatus', opts.payStatus);
+    if (opts?.fulfillment && opts.fulfillment !== 'all') {
+      q.set('fulfillment', opts.fulfillment);
+    }
+    if (opts?.sortBy) q.set('sortBy', opts.sortBy);
+    if (opts?.sortOrder) q.set('sortOrder', opts.sortOrder);
+    if (opts?.page) q.set('page', String(opts.page));
+    if (opts?.pageSize) q.set('pageSize', String(opts.pageSize));
+    const qs = q.toString();
     return request<{
       ok: boolean;
+      total?: number;
+      page?: number;
+      pageSize?: number;
       orders: Array<{
         id: number;
         out_trade_no: string;
@@ -325,11 +354,11 @@ export const api = {
         }>;
         keys?: DeliveredKey[];
       }>;
-    }>('/api/admin/orders', { auth: true });
+    }>(`/api/admin/orders${qs ? `?${qs}` : ''}`, { auth: true });
   },
   listAdminProducts(status: 'all' | 'on' | 'off' = 'all') {
     return request<{ ok: boolean; products: AdminProduct[] }>(
-      `/api/admin/products?status=${status}`,
+      `/api/admin/products?status=${status}&limit=500`,
       { auth: true },
     );
   },

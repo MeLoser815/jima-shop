@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { App, Card, Col, Row, Statistic, Tag, Typography } from 'antd';
+import { Alert, App, Card, Col, Row, Statistic, Tag, Typography } from 'antd';
 import {
   CheckCircleOutlined,
   ShoppingOutlined,
@@ -18,6 +18,7 @@ export default function Dashboard() {
     orderCount: 0,
     paidCount: 0,
     paidAmount: '0.00',
+    pendingFulfillmentCount: 0,
   });
   const [configured, setConfigured] = useState(false);
 
@@ -25,11 +26,16 @@ export default function Dashboard() {
     api
       .dashboard()
       .then((r) => {
-        setStats(r.stats);
+        setStats({
+          ...r.stats,
+          pendingFulfillmentCount: r.stats.pendingFulfillmentCount ?? 0,
+        });
         setConfigured(r.configured);
       })
       .catch((e) => message.error((e as Error).message));
   }, [message]);
+
+  const pending = stats.pendingFulfillmentCount;
 
   return (
     <div>
@@ -41,51 +47,76 @@ export default function Dashboard() {
         <Card className="glass-card" style={{ marginBottom: 16 }}>
           <Tag color="orange">待配置</Tag>
           尚未配置支付宝当面付密钥，
-          <Link to={adminPath("settings")}>去填写 AppId / 私钥 / 公钥 →</Link>
+          <Link to={adminPath('settings')}>去填写 AppId / 私钥 / 公钥 →</Link>
         </Card>
+      )}
+      {pending > 0 && (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={`有 ${pending} 笔已付款订单待补发卡密`}
+          description={
+            <span>
+              买家已付款，但当时库存不足。请先补充卡密货源，再前往
+              <Link to={`${adminPath('orders')}?fulfillment=pending_fulfillment`}>
+                订单列表补发
+              </Link>
+              。
+            </span>
+          }
+        />
       )}
       <Row gutter={[16, 16]}>
         <Col xs={12} md={6}>
-          <Card className="stat-card glass-card">
-            <Statistic
-              title="商品总数"
-              value={stats.productCount}
-              prefix={<ShoppingOutlined />}
-            />
-          </Card>
+          <Link to={adminPath('products')} style={{ display: 'block' }}>
+            <Card className="stat-card glass-card" hoverable>
+              <Statistic
+                title="商品总数"
+                value={stats.productCount}
+                prefix={<ShoppingOutlined />}
+              />
+            </Card>
+          </Link>
         </Col>
         <Col xs={12} md={6}>
-          <Card className="stat-card glass-card">
-            <Statistic
-              title="在售"
-              value={stats.onSaleCount}
-              prefix={<CheckCircleOutlined />}
-              valueStyle={{ color: '#52c41a' }}
-            />
-          </Card>
+          <Link to={adminPath('products')} style={{ display: 'block' }}>
+            <Card className="stat-card glass-card" hoverable>
+              <Statistic
+                title="在售"
+                value={stats.onSaleCount}
+                prefix={<CheckCircleOutlined />}
+                valueStyle={{ color: '#52c41a' }}
+              />
+            </Card>
+          </Link>
         </Col>
         <Col xs={12} md={6}>
-          <Card className="stat-card glass-card">
-            <Statistic
-              title="订单数"
-              value={stats.orderCount}
-              prefix={<TransactionOutlined />}
-            />
-          </Card>
+          <Link to={adminPath('orders')} style={{ display: 'block' }}>
+            <Card className="stat-card glass-card" hoverable>
+              <Statistic
+                title="订单数"
+                value={stats.orderCount}
+                prefix={<TransactionOutlined />}
+              />
+            </Card>
+          </Link>
         </Col>
         <Col xs={12} md={6}>
-          <Card className="stat-card glass-card">
-            <Statistic
-              title="已收款"
-              value={stats.paidAmount}
-              prefix={<WalletOutlined />}
-              suffix="元"
-              valueStyle={{ color: '#ff6b9d' }}
-            />
-            <div style={{ marginTop: 4, color: '#999', fontSize: 12 }}>
-              成功 {stats.paidCount} 笔
-            </div>
-          </Card>
+          <Link to={`${adminPath('orders')}?payStatus=paid`} style={{ display: 'block' }}>
+            <Card className="stat-card glass-card" hoverable>
+              <Statistic
+                title="已收款"
+                value={stats.paidAmount}
+                prefix={<WalletOutlined />}
+                suffix="元"
+                valueStyle={{ color: '#ff6b9d' }}
+              />
+              <div style={{ marginTop: 4, color: '#999', fontSize: 12 }}>
+                成功 {stats.paidCount} 笔
+              </div>
+            </Card>
+          </Link>
         </Col>
       </Row>
     </div>

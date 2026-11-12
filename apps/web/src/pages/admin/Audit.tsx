@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { App, Select, Space, Table, Typography } from 'antd';
+import { App, Button, Input, Select, Space, Table, Typography } from 'antd';
 import { api } from '../../api';
 
 type LogRow = {
@@ -35,12 +35,18 @@ export default function Audit() {
   const [total, setTotal] = useState(0);
   const [retentionDays, setRetentionDays] = useState(30);
   const [savingRetention, setSavingRetention] = useState(false);
+  const [keyword, setKeyword] = useState('');
+  const [appliedKeyword, setAppliedKeyword] = useState('');
+  const [action, setAction] = useState<string>('all');
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     api
-      .listAudit(page, pageSize)
+      .listAudit(page, pageSize, {
+        q: appliedKeyword.trim() || undefined,
+        action: action === 'all' ? undefined : action,
+      })
       .then((r) => {
         if (cancelled) return;
         setRows(r.logs);
@@ -56,7 +62,7 @@ export default function Audit() {
     return () => {
       cancelled = true;
     };
-  }, [page, pageSize, message]);
+  }, [page, pageSize, appliedKeyword, action, message]);
 
   async function onRetentionChange(days: number) {
     setSavingRetention(true);
@@ -70,6 +76,8 @@ export default function Audit() {
       setSavingRetention(false);
     }
   }
+
+  const hasFilters = appliedKeyword.trim() !== '' || action !== 'all';
 
   return (
     <div>
@@ -97,11 +105,52 @@ export default function Audit() {
           />
         </Space>
       </Space>
+      <Space wrap style={{ marginBottom: 16 }}>
+        <Input.Search
+          allowClear
+          placeholder="搜索操作者、动作、详情或 IP"
+          style={{ width: 280 }}
+          value={keyword}
+          onChange={(e) => setKeyword(e.target.value)}
+          onSearch={(v) => {
+            setAppliedKeyword(v);
+            setPage(1);
+          }}
+        />
+        <Select
+          value={action}
+          style={{ width: 180 }}
+          options={[
+            { value: 'all', label: '全部动作' },
+            ...Object.entries(ACTION_LABEL).map(([value, label]) => ({
+              value,
+              label,
+            })),
+          ]}
+          onChange={(v) => {
+            setAction(v);
+            setPage(1);
+          }}
+        />
+        {hasFilters ? (
+          <Button
+            onClick={() => {
+              setKeyword('');
+              setAppliedKeyword('');
+              setAction('all');
+              setPage(1);
+            }}
+          >
+            重置筛选
+          </Button>
+        ) : null}
+      </Space>
       <Table
         rowKey="id"
         loading={loading}
         dataSource={rows}
         scroll={{ x: 900 }}
+        locale={{ emptyText: hasFilters ? '没有符合条件的日志' : '暂无操作日志' }}
         pagination={{
           current: page,
           pageSize,

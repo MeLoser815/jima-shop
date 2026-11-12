@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   App,
   Button,
@@ -17,6 +17,7 @@ import {
   Tag,
   Typography,
 } from 'antd';
+import type { TableProps } from 'antd';
 import { KeyOutlined, PlusOutlined } from '@ant-design/icons';
 import {
   api,
@@ -35,6 +36,12 @@ type FormVals = {
   categoryId?: number | null;
 };
 
+const PAGE_SIZES = [15, 30, 50, 100];
+
+function defaultProductOrder(a: AdminProduct, b: AdminProduct) {
+  return a.sort_order - b.sort_order || b.id - a.id;
+}
+
 export default function Products() {
   const { message } = App.useApp();
   const [rows, setRows] = useState<AdminProduct[]>([]);
@@ -43,6 +50,13 @@ export default function Products() {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<AdminProduct | null>(null);
   const [form] = Form.useForm<FormVals>();
+
+  const [keyword, setKeyword] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'on' | 'off'>('all');
+  const [categoryFilter, setCategoryFilter] = useState<number | 'all' | 'none'>('all');
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(15);
+  const [togglingId, setTogglingId] = useState<number | null>(null);
 
   const [keysOpen, setKeysOpen] = useState(false);
   const [keysProduct, setKeysProduct] = useState<AdminProduct | null>(null);
@@ -74,9 +88,35 @@ export default function Products() {
   }, []);
 
   const catName = (id: number | null) => {
-    if (!id) return '—';
+    if (!id) return '未分类';
     return categories.find((c) => c.id === id)?.name || `#${id}`;
   };
+
+  const filteredRows = useMemo(() => {
+    const q = keyword.trim().toLowerCase();
+    return rows
+      .filter((p) => {
+        if (statusFilter !== 'all' && p.status !== statusFilter) return false;
+        if (categoryFilter === 'none' && p.category_id != null) return false;
+        if (typeof categoryFilter === 'number' && p.category_id !== categoryFilter) {
+          return false;
+        }
+        if (q && !p.name.toLowerCase().includes(q)) return false;
+        return true;
+      })
+      .slice()
+      .sort(defaultProductOrder);
+  }, [rows, keyword, statusFilter, categoryFilter]);
+
+  const hasFilters =
+    keyword.trim() !== '' || statusFilter !== 'all' || categoryFilter !== 'all';
+
+  function resetFilters() {
+    setKeyword('');
+    setStatusFilter('all');
+    setCategoryFilter('all');
+    setPage(1);
+  }
 
   function openCreate() {
     setEditing(null);
@@ -123,6 +163,22 @@ export default function Products() {
     setKeyFilter('all');
     setKeysOpen(true);
     loadKeys(p, 'all');
+  }
+
+  async function toggleStatus(p: AdminProduct) {
+    const next = p.status === 'on' ? 'off' : 'on';
+    setTogglingId(p.id);
+    try {
+      const res = await api.updateProduct(p.id, { status: next });
+      setRows((prev) =>
+        prev.map((row) => (row.id === p.id ? { ...row, ...res.product } : row)),
+      );
+      message.success(next === 'on' ? '已上架，买家可以购买' : '已下架，前台不再展示');
+    } catch (e) {
+      message.error((e as Error).message);
+    } finally {
+      setTogglingId(null);
+    }
   }
 
   async function submit() {
@@ -182,15 +238,120 @@ export default function Products() {
     }
   }
 
+  const columns: TableProps<AdminProduct>['columns'] = [
+    {
+      title: '封面',
+      dataIndex: 'cover_url',
+      width: 80,
+      render: (url: string) =>
+        url ? (
+          <Image src={url} width={48} height={48} style={{ objectFit: 'cover', borderRadius: 8 }} />
+        ) : (
+          '—'
+        ),
+    },
+    {
+      title: '名称',
+      dataIndex: 'name',
+      sorter: (a, b) => a.name.localeCompare(b.name, 'zh-CN'),
+    },
+    {
+      title: '分类',
+      dataIndex: 'category_id',
+      width: 120,
+      render: (id: number | null) => catName(id),
+    },
+    {
+      title: '价格',
+      dataIndex: 'price',
+      width: 110,
+      sorter: (a, b) => Number(a.price) - Number(b.price),
+      render: (v: string) => <span className="price">¥{v}</span>,
+    },
+    {
+      title: '剩余卡密',
+      dataIndex: 'stock',
+      width: 120,
+      sorter: (a, b) => a.stock - b.stock,
+      render: (n: number) => `${n} 张`,
+    },
+    {
+      title: '排序',
+      dataIndex: 'sort_order',
+      width: 90,
+      defaultSortOrder: 'ascend',
+      sorter: defaultProductOrder,
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      width: 120,
+      sorter: (a, b) => Number(b.status === 'on') - Number(a.status === 'on'),
+      render: (_, p) => (
+        <Switch
+          checked={p.status === 'on'}
+          checkedChildren="上架"
+          unCheckedChildren="下架"
+          loading={togglingId === p.id}
+          onChange={() => void toggleStatus(p)}
+        />
+      ),
+    },
+    {
+      title: '更新时间',
+      dataIndex: 'updated_at',
+      width: 180,
+      sorter: (a, b) => a.updated_at.localeCompare(b.updated_at),
+      render: (v: string) => v || '—',
+    },
+    {
+      title: '操作',
+      width: 220,
+      fixed: 'right',
+      render: (_, p) => (
+        <Space wrap size={0}>
+          <Button type="link" size="small" icon={<KeyOutlined />} onClick={() => openKeys(p)}>
+            卡密货源
+          </Button>
+          <Button type="link" size="small" onClick={() => openEdit(p)}>
+            编辑
+          </Button>
+          <Popconfirm
+            title="确认删除该商品？删除后不可恢复。"
+            okText="删除"
+            okButtonProps={{ danger: true }}
+            cancelText="取消"
+            onConfirm={async () => {
+              try {
+                await api.deleteProduct(p.id);
+                message.success('已删除');
+                load();
+              } catch (e) {
+                message.error((e as Error).message);
+              }
+            }}
+          >
+            <Button type="link" size="small" danger>
+              删除
+            </Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ];
+
   return (
     <div>
-      <Space style={{ width: '100%', justifyContent: 'space-between', marginBottom: 16 }}>
+      <Space
+        style={{ width: '100%', justifyContent: 'space-between', marginBottom: 16 }}
+        wrap
+      >
         <div>
           <Typography.Title level={3} style={{ margin: 0 }}>
             商品管理
           </Typography.Title>
           <Typography.Text type="secondary">
-            上架 / 下架 / 改价 / 卡密货源（剩余张数由未用卡密自动计算）
+            用开关直接上架或下架。剩余张数由未用卡密自动计算。
           </Typography.Text>
         </div>
         <Button type="primary" className="candy-btn" icon={<PlusOutlined />} onClick={openCreate}>
@@ -198,87 +359,69 @@ export default function Products() {
         </Button>
       </Space>
 
-      <Table
+      <Space wrap style={{ marginBottom: 16 }}>
+        <Input.Search
+          allowClear
+          placeholder="搜索商品名称"
+          style={{ width: 240 }}
+          value={keyword}
+          onChange={(e) => {
+            setKeyword(e.target.value);
+            setPage(1);
+          }}
+        />
+        <Select
+          value={statusFilter}
+          style={{ width: 140 }}
+          options={[
+            { value: 'all', label: '全部状态' },
+            { value: 'on', label: '已上架' },
+            { value: 'off', label: '已下架' },
+          ]}
+          onChange={(v) => {
+            setStatusFilter(v);
+            setPage(1);
+          }}
+        />
+        <Select
+          value={categoryFilter}
+          style={{ width: 180 }}
+          options={[
+            { value: 'all', label: '全部分类' },
+            { value: 'none', label: '未分类' },
+            ...categories.map((c) => ({
+              value: c.id,
+              label: `${c.icon || ''} ${c.name}`.trim(),
+            })),
+          ]}
+          onChange={(v) => {
+            setCategoryFilter(v);
+            setPage(1);
+          }}
+        />
+        {hasFilters ? (
+          <Button onClick={resetFilters}>重置筛选</Button>
+        ) : null}
+      </Space>
+
+      <Table<AdminProduct>
         rowKey="id"
         loading={loading}
-        dataSource={rows}
-        scroll={{ x: 980 }}
-        columns={[
-          {
-            title: '封面',
-            dataIndex: 'cover_url',
-            width: 80,
-            render: (url: string) =>
-              url ? (
-                <Image src={url} width={48} height={48} style={{ objectFit: 'cover', borderRadius: 8 }} />
-              ) : (
-                '—'
-              ),
+        dataSource={filteredRows}
+        columns={columns}
+        scroll={{ x: 1180 }}
+        locale={{ emptyText: hasFilters ? '没有符合条件的商品' : '暂无商品' }}
+        pagination={{
+          current: page,
+          pageSize,
+          showSizeChanger: true,
+          pageSizeOptions: PAGE_SIZES.map(String),
+          showTotal: (t) => `共 ${t} 件`,
+          onChange: (p, ps) => {
+            setPage(ps !== pageSize ? 1 : p);
+            setPageSize(ps);
           },
-          { title: '名称', dataIndex: 'name' },
-          {
-            title: '分类',
-            dataIndex: 'category_id',
-            width: 110,
-            render: (id: number | null) => catName(id),
-          },
-          {
-            title: '价格',
-            dataIndex: 'price',
-            width: 100,
-            render: (v: string) => <span className="price">¥{v}</span>,
-          },
-          {
-            title: '剩余卡密',
-            dataIndex: 'stock',
-            width: 100,
-            render: (n: number) => `${n} 张`,
-          },
-          {
-            title: '状态',
-            dataIndex: 'status',
-            width: 90,
-            render: (s: string) =>
-              s === 'on' ? <Tag color="success">上架</Tag> : <Tag>下架</Tag>,
-          },
-          {
-            title: '操作',
-            width: 260,
-            render: (_, p) => (
-              <Space wrap>
-                <Button type="link" icon={<KeyOutlined />} onClick={() => openKeys(p)}>
-                  卡密货源
-                </Button>
-                <Button type="link" onClick={() => openEdit(p)}>
-                  编辑
-                </Button>
-                <Button
-                  type="link"
-                  onClick={async () => {
-                    await api.updateProduct(p.id, {
-                      status: p.status === 'on' ? 'off' : 'on',
-                    });
-                    load();
-                  }}
-                >
-                  {p.status === 'on' ? '下架' : '上架'}
-                </Button>
-                <Popconfirm
-                  title="确认删除？"
-                  onConfirm={async () => {
-                    await api.deleteProduct(p.id);
-                    message.success('已删除');
-                    load();
-                  }}
-                >
-                  <Button type="link" danger>
-                    删除
-                  </Button>
-                </Popconfirm>
-              </Space>
-            ),
-          },
-        ]}
+        }}
       />
 
       <Modal

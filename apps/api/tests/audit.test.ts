@@ -71,4 +71,14 @@ describe('audit log pagination and retention', () => {
       false,
     );
   });
+
+  it('filters audit logs by action and keyword', () => {
+    logAudit({ actor: 'shop-owner', action: 'order.fulfill', detail: { outTradeNo: 'JM-FILTER-1' } });
+    const byAction = listAuditLogs(1, 15, { action: 'order.fulfill' });
+    assert.ok(byAction.total >= 1);
+    assert.ok(byAction.logs.every((r) => r.action === 'order.fulfill'));
+    const byText = listAuditLogs(1, 15, { q: 'JM-FILTER-1' });
+    assert.equal(byText.total, 1);
+    assert.equal(byText.logs[0].action, 'order.fulfill');
+  });
 });

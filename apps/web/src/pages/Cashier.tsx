@@ -28,7 +28,7 @@ type Phase = 'form' | 'qr' | 'success' | 'failed';
 export default function CashierPage() {
   const { message } = App.useApp();
   const [amount, setAmount] = useState('0.01');
-  const [subject, setSubject] = useState('当面付测试商品');
+  const [subject, setSubject] = useState('店内收款');
   const [authCode, setAuthCode] = useState('');
   const [mode, setMode] = useState<'qr' | 'bar'>('qr');
   const [phase, setPhase] = useState<Phase>('form');

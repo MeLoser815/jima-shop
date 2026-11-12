@@ -19,8 +19,13 @@ import {
   loadAlipaySettings,
   saveAlipaySettings,
   settingsConfigured,
-  listOrdersWithItems,
   needsAdminSetup,
+  normalizeAdminListPage,
+  normalizeAdminListPageSize,
+  queryAdminOrders,
+  type AdminOrderFulfillment,
+  type AdminOrderPayStatus,
+  type AdminOrderSortBy,
   revokeAdminSession,
   revokeAdminSessionsForUser,
   updateAdminPassword,
@@ -402,9 +407,59 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     '/api/admin/orders',
     { preHandler: requireAdmin },
     async (req) => {
-      const q = req.query as { limit?: string };
-      const limit = Math.min(Number(q.limit ?? 50) || 50, 200);
-      return { ok: true, orders: attachKeysToOrders(listOrdersWithItems(limit)) };
+      const q = req.query as {
+        limit?: string;
+        q?: string;
+        payStatus?: string;
+        fulfillment?: string;
+        sortBy?: string;
+        sortOrder?: string;
+        page?: string;
+        pageSize?: string;
+      };
+      const payStatus: AdminOrderPayStatus =
+        q.payStatus === 'paid' ||
+        q.payStatus === 'pending' ||
+        q.payStatus === 'closed'
+          ? q.payStatus
+          : 'all';
+      const fulfillment: AdminOrderFulfillment =
+        q.fulfillment === 'pending_fulfillment' ||
+        q.fulfillment === 'delivered' ||
+        q.fulfillment === 'none'
+          ? q.fulfillment
+          : 'all';
+      const sortBy: AdminOrderSortBy =
+        q.sortBy === 'total_amount' ||
+        q.sortBy === 'status' ||
+        q.sortBy === 'subject' ||
+        q.sortBy === 'id' ||
+        q.sortBy === 'created_at'
+          ? q.sortBy
+          : 'created_at';
+      const sortOrder = q.sortOrder === 'asc' ? 'asc' : 'desc';
+      const page = normalizeAdminListPage(q.page);
+      const pageSize = q.pageSize
+        ? normalizeAdminListPageSize(q.pageSize)
+        : q.limit
+          ? normalizeAdminListPageSize(q.limit)
+          : 15;
+      const result = queryAdminOrders({
+        q: q.q,
+        payStatus,
+        fulfillment,
+        sortBy,
+        sortOrder,
+        page,
+        pageSize,
+      });
+      return {
+        ok: true,
+        orders: attachKeysToOrders(result.orders),
+        total: result.total,
+        page: result.page,
+        pageSize: result.pageSize,
+      };
     },
   );
 
@@ -438,12 +493,17 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     '/api/admin/audit',
     { preHandler: requireAdmin },
     async (req) => {
-      const q = req.query as { page?: string; pageSize?: string };
+      const q = req.query as {
+        page?: string;
+        pageSize?: string;
+        q?: string;
+        action?: string;
+      };
       const page = normalizeAuditPage(q.page);
       const pageSize = normalizeAuditPageSize(q.pageSize);
       return {
         ok: true,
-        ...listAuditLogs(page, pageSize),
+        ...listAuditLogs(page, pageSize, { q: q.q, action: q.action }),
         retentionDays: getAuditLogRetentionDays(),
       };
     },

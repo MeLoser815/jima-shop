@@ -5,6 +5,13 @@ import { useSearchParams } from 'react-router-dom';
 import { api, type PublicOrder } from '../../api';
 import DeliveredKeys from '../../components/DeliveredKeys';
 
+function unpaidLabel(status?: string) {
+  if (status === 'WAIT_BUYER_PAY' || status === 'PAYING') return '待付款';
+  if (status === 'TRADE_CLOSED') return '已关闭';
+  if (status === 'FAILED') return '支付失败';
+  return status || '未支付';
+}
+
 export default function OrderQuery() {
   const { message } = App.useApp();
   const [params, setParams] = useSearchParams();
@@ -79,7 +86,7 @@ export default function OrderQuery() {
               <span className="mono">{order.outTradeNo}</span>
               <br />
               状态：
-              {paid ? (pending ? '已支付，待补发卡密' : '已支付') : order.status || '未支付'}
+              {paid ? (pending ? '已支付，待补发卡密' : '已支付') : unpaidLabel(order.status)}
             </Typography.Paragraph>
             {paid ? (
               <DeliveredKeys

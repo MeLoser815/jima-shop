@@ -89,19 +89,38 @@ export function logAudit(input: {
 export function listAuditLogs(
   page = 1,
   pageSize = DEFAULT_AUDIT_PAGE_SIZE,
+  opts?: { q?: string; action?: string },
 ): AuditLogPage {
   const safePage = normalizeAuditPage(page);
   const safeSize = normalizeAuditPageSize(pageSize);
+  const action = (opts?.action || '').trim();
+  const keyword = (opts?.q || '').trim().replace(/[%_]/g, '');
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (action) {
+    where.push('action = ?');
+    params.push(action);
+  }
+  if (keyword) {
+    const like = `%${keyword}%`;
+    where.push(
+      `(actor LIKE ? OR action LIKE ? OR IFNULL(detail, '') LIKE ? OR IFNULL(ip, '') LIKE ?)`,
+    );
+    params.push(like, like, like, like);
+  }
+  const whereSql = where.length ? ` WHERE ${where.join(' AND ')}` : '';
   const db = getDb();
   const total = (
-    db.prepare(`SELECT COUNT(*) AS n FROM audit_logs`).get() as { n: number }
+    db
+      .prepare(`SELECT COUNT(*) AS n FROM audit_logs${whereSql}`)
+      .get(...params) as { n: number }
   ).n;
   const offset = (safePage - 1) * safeSize;
   const logs = db
     .prepare(
-      `SELECT * FROM audit_logs ORDER BY id DESC LIMIT ? OFFSET ?`,
+      `SELECT * FROM audit_logs${whereSql} ORDER BY id DESC LIMIT ? OFFSET ?`,
     )
-    .all(safeSize, offset) as AuditLogRow[];
+    .all(...params, safeSize, offset) as AuditLogRow[];
   return { logs, total, page: safePage, pageSize: safeSize };
 }
 

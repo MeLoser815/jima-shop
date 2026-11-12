@@ -672,6 +672,129 @@ export function updateOrder(
 }
 
 
+export const ADMIN_LIST_PAGE_SIZES = [15, 30, 50, 100] as const;
+export const DEFAULT_ADMIN_LIST_PAGE_SIZE = 15;
+
+export type AdminOrderPayStatus = 'all' | 'paid' | 'pending' | 'closed';
+export type AdminOrderFulfillment =
+  | 'all'
+  | 'pending_fulfillment'
+  | 'delivered'
+  | 'none';
+export type AdminOrderSortBy =
+  | 'created_at'
+  | 'total_amount'
+  | 'status'
+  | 'subject'
+  | 'id';
+
+const PAID_ORDER_STATUSES = ['TRADE_SUCCESS', 'TRADE_FINISHED', 'SUCCESS'];
+const PENDING_ORDER_STATUSES = ['WAIT_BUYER_PAY', 'PAYING'];
+const CLOSED_ORDER_STATUSES = ['TRADE_CLOSED', 'FAILED'];
+
+export function normalizeAdminListPageSize(raw: unknown): number {
+  const n = Number(raw);
+  return (ADMIN_LIST_PAGE_SIZES as readonly number[]).includes(n)
+    ? n
+    : DEFAULT_ADMIN_LIST_PAGE_SIZE;
+}
+
+export function normalizeAdminListPage(raw: unknown): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return Math.floor(n);
+}
+
+function likeContains(raw: string): string | null {
+  const cleaned = raw.trim().replace(/[%_]/g, '');
+  if (!cleaned) return null;
+  return `%${cleaned}%`;
+}
+
+export function queryAdminOrders(opts?: {
+  q?: string;
+  payStatus?: AdminOrderPayStatus;
+  fulfillment?: AdminOrderFulfillment;
+  sortBy?: AdminOrderSortBy;
+  sortOrder?: 'asc' | 'desc';
+  page?: number;
+  pageSize?: number;
+}): {
+  orders: Array<OrderRow & { items: OrderItemRow[] }>;
+  total: number;
+  page: number;
+  pageSize: number;
+} {
+  const page = normalizeAdminListPage(opts?.page);
+  const pageSize = normalizeAdminListPageSize(opts?.pageSize);
+  const payStatus = opts?.payStatus ?? 'all';
+  const fulfillment = opts?.fulfillment ?? 'all';
+  const sortBy: AdminOrderSortBy = opts?.sortBy ?? 'created_at';
+  const sortOrder = opts?.sortOrder === 'asc' ? 'ASC' : 'DESC';
+  const like = likeContains(opts?.q ?? '');
+
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (like) {
+    where.push(
+      `(out_trade_no LIKE ? OR IFNULL(trade_no, '') LIKE ? OR subject LIKE ? OR IFNULL(buyer_note, '') LIKE ?)`,
+    );
+    params.push(like, like, like, like);
+  }
+  if (payStatus === 'paid') {
+    where.push(
+      `status IN (${PAID_ORDER_STATUSES.map(() => '?').join(', ')})`,
+    );
+    params.push(...PAID_ORDER_STATUSES);
+  } else if (payStatus === 'pending') {
+    where.push(
+      `status IN (${PENDING_ORDER_STATUSES.map(() => '?').join(', ')})`,
+    );
+    params.push(...PENDING_ORDER_STATUSES);
+  } else if (payStatus === 'closed') {
+    where.push(
+      `status IN (${CLOSED_ORDER_STATUSES.map(() => '?').join(', ')})`,
+    );
+    params.push(...CLOSED_ORDER_STATUSES);
+  }
+  if (fulfillment !== 'all') {
+    where.push('fulfillment_status = ?');
+    params.push(fulfillment);
+  }
+
+  const whereSql = where.length ? ` WHERE ${where.join(' AND ')}` : '';
+  const orderSql =
+    sortBy === 'total_amount'
+      ? `ORDER BY CAST(total_amount AS REAL) ${sortOrder}, id DESC`
+      : sortBy === 'status'
+        ? `ORDER BY status ${sortOrder}, id DESC`
+        : sortBy === 'subject'
+          ? `ORDER BY subject ${sortOrder}, id DESC`
+          : sortBy === 'id'
+            ? `ORDER BY id ${sortOrder}`
+            : `ORDER BY datetime(created_at) ${sortOrder}, id DESC`;
+
+  const db = getDb();
+  const total = (
+    db
+      .prepare(`SELECT COUNT(*) AS n FROM orders${whereSql}`)
+      .get(...params) as { n: number }
+  ).n;
+  const offset = (page - 1) * pageSize;
+  const rows = db
+    .prepare(
+      `SELECT * FROM orders${whereSql} ${orderSql} LIMIT ? OFFSET ?`,
+    )
+    .all(...params, pageSize, offset) as OrderRow[];
+
+  return {
+    orders: rows.map((o) => ({ ...o, items: getOrderItems(o.id) })),
+    total,
+    page,
+    pageSize,
+  };
+}
+
 export function listOrders(limit = 50): OrderRow[] {
   return getDb()
     .prepare('SELECT * FROM orders ORDER BY id DESC LIMIT ?')
@@ -691,6 +814,7 @@ export function getDashboardStats(): {
   orderCount: number;
   paidCount: number;
   paidAmount: string;
+  pendingFulfillmentCount: number;
 } {
   const d = getDb();
   const productCount = (
@@ -703,6 +827,13 @@ export function getDashboardStats(): {
   ).c;
   const orderCount = (
     d.prepare('SELECT COUNT(*) AS c FROM orders').get() as { c: number }
+  ).c;
+  const pendingFulfillmentCount = (
+    d
+      .prepare(
+        `SELECT COUNT(*) AS c FROM orders WHERE fulfillment_status = 'pending_fulfillment'`,
+      )
+      .get() as { c: number }
   ).c;
   const paidRows = d
     .prepare(
@@ -724,6 +855,7 @@ export function getDashboardStats(): {
     orderCount,
     paidCount: paidRows.length,
     paidAmount: fenToYuan(paidFen),
+    pendingFulfillmentCount,
   };
 }
 

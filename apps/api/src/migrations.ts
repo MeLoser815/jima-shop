@@ -131,6 +131,43 @@ const MIGRATIONS: Migration[] = [
       );
     },
   },
+  {
+    id: 6,
+    name: 'payment_label_and_usdt',
+    up(db) {
+      ensureColumn(db, 'orders', 'payment_label', 'TEXT');
+      ensureColumn(db, 'orders', 'usdt_trade_id', 'TEXT');
+      ensureColumn(db, 'orders', 'usdt_amount', 'TEXT');
+      ensureColumn(db, 'orders', 'usdt_address', 'TEXT');
+      ensureColumn(db, 'orders', 'usdt_expire_at', 'TEXT');
+      ensureColumn(db, 'orders', 'usdt_tx_hash', 'TEXT');
+      db.exec(
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_usdt_tx_hash
+         ON orders(usdt_tx_hash)
+         WHERE usdt_tx_hash IS NOT NULL AND usdt_tx_hash != ''`,
+      );
+    },
+  },
+  {
+    id: 7,
+    name: 'usdt_network',
+    up(db) {
+      ensureColumn(db, 'orders', 'usdt_network', 'TEXT');
+      db.exec(
+        `UPDATE orders
+         SET usdt_network = 'trc20'
+         WHERE payment_channel = 'usdt_trc20'
+           AND (usdt_network IS NULL OR usdt_network = '')`,
+      );
+      db.exec(`DROP INDEX IF EXISTS idx_orders_usdt_tx_hash`);
+      db.exec(
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_usdt_network_tx
+         ON orders(usdt_network, usdt_tx_hash)
+         WHERE usdt_tx_hash IS NOT NULL AND usdt_tx_hash != ''
+           AND usdt_network IS NOT NULL AND usdt_network != ''`,
+      );
+    },
+  },
 ];
 
 export function runMigrations(db: Database.Database): void {

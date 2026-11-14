@@ -8,6 +8,9 @@ import {
 import {
   isBlockedSsrfHost,
   isPublicHttpUrl,
+  shouldTrustForwardedHeaders,
+  requestPeerAddress,
+  type ForwardedRequestLike,
 } from './security.js';
 import {
   type EpayChannel,
@@ -314,21 +317,61 @@ export function qrOrPayContent(result: EpayCreateResult): string | undefined {
 }
 
 /**
- * 查单结果：status=1 或 trade_status=TRADE_SUCCESS 视为已支付。
+ * 判断易支付异步通知是否已支付。
+ * 若带有 trade_status，仅认 TRADE_SUCCESS / TRADE_FINISHED；
+ * 若没有 trade_status，则认 status=1，或 status 本身为 TRADE_SUCCESS / TRADE_FINISHED。
+ */
+export function isEpayNotifyPaid(
+  params: Record<string, string | undefined | null>,
+): boolean {
+  const tradeStatus = String(params.trade_status ?? '').trim();
+  if (tradeStatus) {
+    return tradeStatus === 'TRADE_SUCCESS' || tradeStatus === 'TRADE_FINISHED';
+  }
+  const status = String(params.status ?? '').trim();
+  return (
+    status === '1' ||
+    status === 'TRADE_SUCCESS' ||
+    status === 'TRADE_FINISHED'
+  );
+}
+
+/** 将通知字段规范为本地订单状态。已付时映射为 TRADE_SUCCESS / TRADE_FINISHED。 */
+export function epayNotifyTradeStatus(
+  params: Record<string, string | undefined | null>,
+): string | undefined {
+  const tradeStatus = String(params.trade_status ?? '').trim();
+  if (tradeStatus) return tradeStatus;
+  const status = String(params.status ?? '').trim();
+  if (status === '1' || status === 'TRADE_SUCCESS') return 'TRADE_SUCCESS';
+  if (status === 'TRADE_FINISHED') return 'TRADE_FINISHED';
+  if (status === '-1' || status === 'TRADE_CLOSED') return 'TRADE_CLOSED';
+  return status || undefined;
+}
+
+/**
+ * 查单结果：与通知同一套已付判断。若有 trade_status 以其为准，否则认 status=1。
  */
 export function parseEpayQueryResult(raw: Record<string, unknown>): EpayQueryResult {
   const code = pickStr(raw, 'code');
   const ok = code === '1';
-  const statusRaw = pickStr(raw, 'status', 'trade_status', 'tradeStatus');
-  const paid =
-    statusRaw === '1' ||
-    statusRaw === 'TRADE_SUCCESS' ||
-    statusRaw === 'TRADE_FINISHED';
+  const tradeStatusRaw = pickStr(raw, 'trade_status', 'tradeStatus');
+  const statusRaw = pickStr(raw, 'status');
+  const paid = isEpayNotifyPaid({
+    trade_status: tradeStatusRaw,
+    status: statusRaw,
+  });
+  const closed =
+    tradeStatusRaw === 'TRADE_CLOSED' ||
+    statusRaw === 'TRADE_CLOSED' ||
+    statusRaw === '-1';
   const tradeStatus = paid
-    ? 'TRADE_SUCCESS'
-    : statusRaw === 'TRADE_CLOSED' || statusRaw === '-1'
+    ? tradeStatusRaw === 'TRADE_FINISHED'
+      ? 'TRADE_FINISHED'
+      : 'TRADE_SUCCESS'
+    : closed
       ? 'TRADE_CLOSED'
-      : statusRaw
+      : tradeStatusRaw || statusRaw
         ? 'WAIT_BUYER_PAY'
         : undefined;
   return {
@@ -468,16 +511,17 @@ export function buyerReturnUrl(
   }
 }
 
-export function requestOrigin(req: {
-  protocol: string;
-  hostname?: string;
-  headers: Record<string, unknown>;
-  fallbackOrigin?: string;
-}): string | undefined {
-  const protoRaw = firstHeader(req.headers, 'x-forwarded-proto') || req.protocol || '';
+export function requestOrigin(
+  req: ForwardedRequestLike & { fallbackOrigin?: string },
+): string | undefined {
+  const trust = shouldTrustForwardedHeaders(requestPeerAddress(req));
+  const protoRaw =
+    (trust ? firstHeader(req.headers, 'x-forwarded-proto') : '') ||
+    req.protocol ||
+    '';
   const proto = protoRaw.split(',')[0].trim().replace(/:$/, '');
   const host = (
-    firstHeader(req.headers, 'x-forwarded-host') ||
+    (trust ? firstHeader(req.headers, 'x-forwarded-host') : '') ||
     firstHeader(req.headers, 'host') ||
     req.hostname ||
     ''

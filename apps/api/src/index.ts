@@ -10,10 +10,12 @@ import fastifyStatic from '@fastify/static';
 import bcrypt from 'bcryptjs';
 import { injectAdminBasePath } from './adminPath.js';
 import { config } from './config.js';
-import { assertProductionConfig } from './security.js';
+import { assertProductionConfig, trustProxyOption } from './security.js';
 import { closeDb, createFirstAdminUser, getAdminBasePath, getDb, needsAdminSetup } from './db.js';
 import { startAuditLogCleaner } from './audit.js';
 import { startReservationReleaser } from './cardKeys.js';
+import { startUsdtWatcher } from './usdt.js';
+import { startPaymentReconciler } from './paymentReconcile.js';
 import { adminRoutes } from './routes/admin.js';
 import { paymentRoutes } from './routes/payment.js';
 import { productRoutes } from './routes/products.js';
@@ -47,14 +49,16 @@ async function main() {
   getDb();
   await maybeBootstrapAdmin();
   startReservationReleaser();
+  startUsdtWatcher();
+  startPaymentReconciler();
   startAuditLogCleaner();
 
   const app = Fastify({
     logger: {
       level: config.nodeEnv === 'production' ? 'info' : 'debug',
     },
-    // 1Panel / Nginx 等反代后需要信任 X-Forwarded-*，否则限流会把所有访客算成同一个 IP
-    trustProxy: true,
+    // 默认只信任上一跳为私网/回环的反代；公网直连不会采信客户端 X-Forwarded-*（见 TRUST_PROXY）
+    trustProxy: trustProxyOption(),
   });
 
   await app.register(helmet, {

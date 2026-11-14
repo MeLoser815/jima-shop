@@ -299,9 +299,42 @@ describe('card secret encryption, reservation, 补发, public view', () => {
          WHERE order_id = ?`,
       )
       .run(again.order.id);
+    assert.equal(releaseExpiredReservations(), 0);
+    assert.equal(countUnusedKeys(p.id), 1);
+
+    getDb()
+      .prepare(
+        `UPDATE card_keys SET reserved_until = datetime('now', '-21 minutes')
+         WHERE order_id = ?`,
+      )
+      .run(again.order.id);
     const n = releaseExpiredReservations();
     assert.ok(n >= 1);
     assert.equal(countUnusedKeys(p.id), 2);
+  });
+
+  it('still delivers this order reserved keys after reserved_until has passed', () => {
+    const p = createProduct({ name: '迟到账预占', price: '2.00', status: 'on' });
+    importCardKeys(p.id, 'LATE-KEY-1');
+    const reserved = createReservedCheckoutOrder({
+      outTradeNo: 'TESTLATEPAY001',
+      items: [{ productId: p.id, quantity: 1 }],
+    });
+    getDb()
+      .prepare(
+        `UPDATE card_keys SET reserved_until = datetime('now', '-21 minutes')
+         WHERE order_id = ?`,
+      )
+      .run(reserved.order.id);
+    const paid = markOrderPaidAndDeliverKeys('TESTLATEPAY001', {
+      status: 'TRADE_SUCCESS',
+    });
+    assert.equal(paid.assigned, 1);
+    assert.equal(paid.fulfillmentStatus, 'delivered');
+    const keys = getKeysByOrderId(reserved.order.id);
+    assert.equal(keys.length, 1);
+    assert.equal(keys[0].status, 'sold');
+    assert.equal(keys[0].secret, 'LATE-KEY-1');
   });
 
   it('fulfills pending_fulfillment after restock without over-delivery', () => {
@@ -324,19 +357,45 @@ describe('card secret encryption, reservation, 补发, public view', () => {
 
     const view = getPublicOrderView('TESTFULFILL001');
     assert.equal(view!.message, PENDING_FULFILLMENT_MESSAGE);
-    assert.match(view!.message!, /不会自动完成/);
+    assert.match(view!.message!, /自动发卡/);
 
     importCardKeys(p.id, 'FF-2\nFF-3\nFF-4');
-    const once = fulfillPendingOrder('TESTFULFILL001');
-    assert.equal(once.added, 2);
-    assert.equal(once.assigned, 3);
-    assert.equal(once.fulfillmentStatus, 'delivered');
+    const afterImport = getPublicOrderView('TESTFULFILL001');
+    assert.equal(afterImport!.fulfillmentStatus, 'delivered');
+    assert.equal(afterImport!.keys.length, 3);
     assert.equal(countUnusedKeys(p.id), 1);
 
     const twice = fulfillPendingOrder('TESTFULFILL001');
     assert.equal(twice.added, 0);
     assert.equal(twice.assigned, 3);
     assert.equal(getKeysByOrderId(order.id).filter((k) => k.status === 'sold').length, 3);
+  });
+
+  it('keeps pending_fulfillment when restock is still short', () => {
+    const p = createProduct({ name: '不足补货', price: '3.00', status: 'on' });
+    importCardKeys(p.id, 'SHORT-1');
+    const order = createOrder({
+      outTradeNo: 'TESTSHORTSTOCK001',
+      subject: p.name,
+      totalAmount: '9.00',
+      status: 'WAIT_BUYER_PAY',
+    });
+    addOrderItems(order.id, [
+      { productId: p.id, productName: p.name, unitPrice: '3.00', quantity: 3 },
+    ]);
+    const first = markOrderPaidAndDeliverKeys('TESTSHORTSTOCK001', {
+      status: 'TRADE_SUCCESS',
+    });
+    assert.equal(first.fulfillmentStatus, 'pending_fulfillment');
+    assert.equal(first.assigned, 1);
+    importCardKeys(p.id, 'SHORT-2');
+    const mid = getPublicOrderView('TESTSHORTSTOCK001');
+    assert.equal(mid!.fulfillmentStatus, 'pending_fulfillment');
+    assert.equal(mid!.keys.length, 2);
+    importCardKeys(p.id, 'SHORT-3');
+    const done = getPublicOrderView('TESTSHORTSTOCK001');
+    assert.equal(done!.fulfillmentStatus, 'delivered');
+    assert.equal(done!.keys.length, 3);
   });
 
   it('public order view never includes notify payload or buyer account', () => {

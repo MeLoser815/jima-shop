@@ -25,7 +25,16 @@ type PayOrder = {
   payUrl?: string;
   payScheme?: string;
   payMethod?: string;
+  paymentMethod?: string;
   status: string;
+  usdt?: {
+    address: string;
+    amount: string;
+    network: string;
+    expireAt?: string;
+    paymentUrl?: string;
+    qrContent: string;
+  };
 };
 
 type PayMethod = { id: string; label: string };
@@ -51,18 +60,33 @@ function errorText(err: unknown): string {
   return msg || '生成收款码失败，请稍后重试';
 }
 
-function scanHint(label?: string): string {
-  const name = label || '支付宝';
-  if (name === '微信') return '请使用微信扫描上方二维码。支付完成后页面会自动展示卡密。也可凭商户单号到「查单」查看。';
-  if (name === 'QQ钱包') return '请使用 QQ 钱包扫描上方二维码。支付完成后页面会自动展示卡密。也可凭商户单号到「查单」查看。';
-  return '请使用支付宝扫描上方二维码。支付完成后页面会自动展示卡密。也可凭商户单号到「查单」查看。';
+function isUsdtPay(order?: { paymentMethod?: string; payMethod?: string; usdt?: { network?: string } } | null): boolean {
+  if (!order) return false;
+  if ((order.paymentMethod || '').startsWith('usdt_')) return true;
+  if (order.usdt?.network) return true;
+  const name = (order.payMethod || '').toUpperCase();
+  return name === 'USDT' || name.startsWith('USDT (');
 }
 
-function payTitle(label?: string): string {
-  const name = label || '支付宝';
-  if (name === '微信') return '微信扫码支付';
-  if (name === 'QQ钱包') return 'QQ钱包扫码支付';
-  return '支付宝扫码支付';
+function scanHint(order: PayOrder): string {
+  const name = order.payMethod || '支付宝';
+  if (isUsdtPay(order)) {
+    const net = order.usdt?.network || '对应网络';
+    return `请务必在「${net}」向收款地址转入精确的 ${order.usdt?.amount || ''} USDT。转错链或少一分都无法自动确认。到账确认可能需要几分钟，请留在本页，也可稍后凭商户单号查单。支付完成后页面会自动展示卡密。`;
+  }
+  if (order.paymentMethod === 'epay_wxpay' || name === '微信') {
+    return `请使用微信扫描上方二维码完成「${name}」支付。支付完成后页面会自动展示卡密。也可凭商户单号到「查单」查看。`;
+  }
+  if (order.paymentMethod === 'epay_qqpay' || name === 'QQ钱包') {
+    return `请使用 QQ 钱包扫描上方二维码完成「${name}」支付。支付完成后页面会自动展示卡密。也可凭商户单号到「查单」查看。`;
+  }
+  return `请使用对应应用扫描上方二维码完成「${name}」支付。支付完成后页面会自动展示卡密。也可凭商户单号到「查单」查看。`;
+}
+
+function payTitle(order: PayOrder): string {
+  const name = order.payMethod || '支付宝';
+  if (isUsdtPay(order)) return `${name} 转账`;
+  return `${name}扫码支付`;
 }
 
 function startButtonLabel(methods: PayMethod[], selected?: string): string {
@@ -122,6 +146,14 @@ export default function PayPage() {
           }
           return;
         }
+        if (st === 'TRADE_CLOSED' || st === 'FAILED') {
+          setPayError(
+            st === 'TRADE_CLOSED'
+              ? '订单已关闭或已过期，请重新下单。'
+              : '支付失败，请重新下单或联系商家。',
+          );
+          setOrder(null);
+        }
       } catch {
         /* ignore poll errors */
       }
@@ -152,23 +184,29 @@ export default function PayPage() {
         buyerNote: note.trim() || undefined,
         paymentMethod: paymentMethod || undefined,
       });
-      const qrCode = res.order?.qrCode?.trim() || '';
-      const payUrl = res.order?.payUrl?.trim() || '';
+      const qrCode = res.order?.qrCode?.trim() || res.order?.usdt?.qrContent?.trim() || '';
+      const payUrl = res.order?.payUrl?.trim() || res.order?.usdt?.paymentUrl?.trim() || '';
       const payScheme = res.order?.payScheme?.trim() || '';
-      if (!qrCode && !payUrl && !payScheme) {
+      if (!qrCode && !payUrl && !payScheme && !res.order?.usdt?.address) {
         throw new Error('未能生成收款码，请稍后重试或联系商家');
       }
       setOrder({
         outTradeNo: res.order.outTradeNo,
         totalAmount: res.order.totalAmount,
         subject: res.order.subject,
-        qrCode: qrCode || payUrl || payScheme,
+        qrCode: qrCode || payUrl || payScheme || res.order.usdt?.qrContent || res.order.usdt?.address || '',
         payUrl: payUrl || undefined,
         payScheme: payScheme || undefined,
         payMethod: res.order.payMethod,
+        paymentMethod: res.order.paymentMethod,
         status: res.order.status,
+        usdt: res.order.usdt,
       });
-      message.success(`已生成收款码，请使用${res.order.payMethod || '支付宝'}扫码`);
+      message.success(
+        (res.order.paymentMethod || '').startsWith('usdt_')
+          ? `请按显示的精确金额完成${res.order.payMethod || 'USDT'}转账`
+          : `已生成收款码，请使用${res.order.payMethod || '支付宝'}扫码`,
+      );
     } catch (e) {
       const text = errorText(e);
       setPayError(text);
@@ -207,32 +245,62 @@ export default function PayPage() {
     );
   }
 
-  if (order?.qrCode) {
+  if (order?.qrCode || order?.usdt) {
+    const qrValue = order.qrCode || order.usdt?.qrContent || order.usdt?.address || '';
     return (
       <Card className="glass-card pay-qr-card">
         <Typography.Title level={3} style={{ textAlign: 'center' }}>
-          {payTitle(order.payMethod)}
+          {payTitle(order)}
         </Typography.Title>
         <Typography.Paragraph type="secondary" style={{ textAlign: 'center' }}>
           {order.subject} · ¥{order.totalAmount}
+          {order.usdt?.amount ? ` · ${order.usdt.amount} USDT` : ''}
         </Typography.Paragraph>
-        <div className="qr-panel cute">
-          <QRCodeSVG value={order.qrCode} size={220} includeMargin />
-          <Spin tip="等待支付中…" />
-          <div className="mono">{order.outTradeNo}</div>
-        </div>
+        {qrValue ? (
+          <div className="qr-panel cute">
+            <QRCodeSVG value={qrValue} size={220} includeMargin />
+            <Spin tip="等待支付中…" />
+            <div className="mono">{order.outTradeNo}</div>
+          </div>
+        ) : (
+          <div style={{ textAlign: 'center', margin: '16px 0' }}>
+            <Spin tip="等待支付中…" />
+            <div className="mono">{order.outTradeNo}</div>
+          </div>
+        )}
+        {order.usdt && (
+          <div style={{ marginTop: 16, textAlign: 'center' }}>
+            <Typography.Paragraph style={{ marginBottom: 8, fontWeight: 600 }}>
+              网络：{order.usdt.network || 'USDT'}
+            </Typography.Paragraph>
+            <Typography.Paragraph type="warning" style={{ marginBottom: 8 }}>
+              请只在「{order.usdt.network || '该网络'}」转账，转到其他链将无法到账发卡。
+            </Typography.Paragraph>
+            <Typography.Paragraph copyable={{ text: order.usdt.address }} className="mono">
+              {order.usdt.address}
+            </Typography.Paragraph>
+            <Typography.Paragraph copyable={{ text: order.usdt.amount }} style={{ fontSize: 20, marginBottom: 4 }}>
+              {order.usdt.amount} USDT
+            </Typography.Paragraph>
+            {order.usdt.expireAt && (
+              <Typography.Paragraph type="secondary">
+                请在 {new Date(order.usdt.expireAt).toLocaleString()} 前完成转账
+              </Typography.Paragraph>
+            )}
+          </div>
+        )}
         <Alert
           type="info"
           showIcon
           style={{ marginTop: 16 }}
-          message={scanHint(order.payMethod)}
+          message={scanHint(order)}
         />
-        {(order.payUrl || order.payScheme) && (
+        {(order.payUrl || order.payScheme || order.usdt?.paymentUrl) && (
           <div style={{ textAlign: 'center', marginTop: 12 }}>
             <Button
               type="primary"
               className="candy-btn"
-              href={order.payUrl || order.payScheme}
+              href={order.payUrl || order.payScheme || order.usdt?.paymentUrl}
               target="_blank"
               rel="noreferrer"
             >
@@ -307,7 +375,7 @@ export default function PayPage() {
               />
             </div>
           )}
-          {httpHint && (
+          {httpHint && !(selectedMethod || '').startsWith('usdt_') && (
             <Alert type="warning" showIcon message={httpHint} />
           )}
           {payError && (

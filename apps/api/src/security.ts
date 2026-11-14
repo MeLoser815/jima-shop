@@ -15,6 +15,88 @@ export function isInsecureSecret(value: string | undefined): boolean {
   return PLACEHOLDER_SECRETS.has(value.trim());
 }
 
+export type TrustProxyMode = 'off' | 'private' | 'all';
+
+/** TRUST_PROXY：true/all 信任全部转发头；false/off 全部不信任；缺省或 private 仅信任上一跳为私网/回环的反代。 */
+export function parseTrustProxyMode(
+  raw: string | undefined = process.env.TRUST_PROXY,
+): TrustProxyMode {
+  const v = (raw ?? '').trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on', 'all'].includes(v)) return 'all';
+  if (['0', 'false', 'no', 'off'].includes(v)) return 'off';
+  return 'private';
+}
+
+export function normalizePeerAddress(address: string | undefined): string {
+  if (!address) return '';
+  let h = address.trim().toLowerCase();
+  if (h.startsWith('::ffff:')) h = h.slice('::ffff:'.length);
+  const zone = h.indexOf('%');
+  if (zone >= 0) h = h.slice(0, zone);
+  return h.replace(/^\[|\]$/g, '');
+}
+
+/** 本机回环或 RFC1918 / IPv6 ULA、链路本地。用于判断反代上一跳，不含 CGNAT 与组播。 */
+export function isTrustedProxyHop(address: string | undefined): boolean {
+  const h = normalizePeerAddress(address);
+  if (!h) return false;
+  if (h === 'localhost' || h === '::1') return true;
+  const v4 = h.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (v4) {
+    const oct = v4.slice(1).map((s) => Number(s));
+    if (oct.some((n) => n > 255)) return false;
+    const [a, b] = oct;
+    if (a === 127) return true;
+    if (a === 10) return true;
+    if (a === 192 && b === 168) return true;
+    if (a === 172 && b >= 16 && b <= 31) return true;
+    return false;
+  }
+  if (!h.includes(':')) return false;
+  if (h.startsWith('::')) {
+    if (h === '::1') return true;
+    return false;
+  }
+  const first = h.split(':')[0];
+  if (!/^[0-9a-f]{1,4}$/i.test(first)) return false;
+  const n = Number.parseInt(first, 16);
+  if ((n & 0xfe00) === 0xfc00) return true; // fc00::/7
+  if ((n & 0xffc0) === 0xfe80) return true; // fe80::/10
+  return false;
+}
+
+export function shouldTrustForwardedHeaders(
+  peerAddress: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const mode = parseTrustProxyMode(env.TRUST_PROXY);
+  if (mode === 'all') return true;
+  if (mode === 'off') return false;
+  return isTrustedProxyHop(peerAddress);
+}
+
+/** Fastify trustProxy：默认仅信任私网/回环上一跳。 */
+export function trustProxyOption(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean | ((address: string) => boolean) {
+  const mode = parseTrustProxyMode(env.TRUST_PROXY);
+  if (mode === 'all') return true;
+  if (mode === 'off') return false;
+  return (address: string) => isTrustedProxyHop(address);
+}
+
+export type ForwardedRequestLike = {
+  protocol: string;
+  hostname?: string;
+  headers: Record<string, unknown>;
+  socket?: { remoteAddress?: string };
+  remoteAddress?: string;
+};
+
+export function requestPeerAddress(req: ForwardedRequestLike): string {
+  return req.remoteAddress || req.socket?.remoteAddress || '';
+}
+
 /** 拒绝内网、本机、链路本地和云元数据地址，防止 SSRF。 */
 export function isBlockedSsrfHost(host: string | undefined): boolean {
   if (!host) return true;
@@ -121,11 +203,19 @@ export function buildAutoEpayNotifyUrl(
   return buildAutoNotifyUrl(protocol, hostHeader, '/api/payment/epay/notify');
 }
 
+export function buildAutoUsdtNotifyUrl(
+  protocol: string,
+  hostHeader: string | undefined,
+): string | undefined {
+  return buildAutoNotifyUrl(protocol, hostHeader, '/api/payment/usdt/notify');
+}
+
 export type RequestAccess = {
   protocol: string;
   host: string;
   notifyUrl?: string;
   epayNotifyUrl?: string;
+  usdtNotifyUrl?: string;
   /** 公网 HTTP（非 localhost）访问，无法自动登记异步回调 */
   insecureHttp: boolean;
 };
@@ -166,20 +256,17 @@ export function isInsecurePublicHttp(
 }
 
 /** 从反代后的请求中识别协议、主机，并在公网 HTTPS 时拼回调地址。 */
-export function requestAccessFromRequest(req: {
-  protocol: string;
-  hostname?: string;
-  headers: Record<string, unknown>;
-}): RequestAccess {
+export function requestAccessFromRequest(req: ForwardedRequestLike): RequestAccess {
+  const trust = shouldTrustForwardedHeaders(requestPeerAddress(req));
   const proto = (
-    firstHeader(req.headers, 'x-forwarded-proto') ||
+    (trust ? firstHeader(req.headers, 'x-forwarded-proto') : '') ||
     req.protocol ||
     ''
   )
     .split(',')[0]
     .trim();
   const host = (
-    firstHeader(req.headers, 'x-forwarded-host') ||
+    (trust ? firstHeader(req.headers, 'x-forwarded-host') : '') ||
     firstHeader(req.headers, 'host') ||
     req.hostname ||
     ''
@@ -191,6 +278,7 @@ export function requestAccessFromRequest(req: {
     host,
     notifyUrl: buildAutoNotifyUrl(proto, host),
     epayNotifyUrl: buildAutoEpayNotifyUrl(proto, host),
+    usdtNotifyUrl: buildAutoUsdtNotifyUrl(proto, host),
     insecureHttp: isInsecurePublicHttp(proto, host),
   };
 }

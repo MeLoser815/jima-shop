@@ -6,11 +6,14 @@ import {
   getOrderByOutTradeNo,
   getOrderItems,
   getProductById,
+  listPendingFulfillmentOrders,
   updateOrder,
   type OrderItemRow,
   type OrderRow,
+  orderUsdtNetwork,
 } from './db.js';
-import { paymentChannelLabel } from './paymentMethods.js';
+import { isUsdtPaymentChannel, paymentChannelLabel } from './paymentMethods.js';
+import { buildUsdtQrContent, getUsdtNetwork, isUsdtNetworkId } from './usdtChains.js';
 import { fenToYuan, yuanToFen } from './money.js';
 import { CARD_IMPORT_MAX_CHARS } from './security.js';
 import { formatCardKeyText, parseCardKeyLines } from './utils/cardKeyParse.js';
@@ -58,9 +61,11 @@ export type CheckoutLine = {
 };
 
 export const RESERVATION_TTL_MINUTES = 15;
+/** 预占到期后再保留一段时间，避免支付宝/易支付迟到账通知时卡密已被释放。 */
+export const RESERVATION_RELEASE_GRACE_MINUTES = 20;
 
 export const PENDING_FULFILLMENT_MESSAGE =
-  '部分或全部卡密暂未能自动发出，商家将尽快为您补发。补发完成后可通过查单查看；在商家处理前，再次查单不会自动完成发货。';
+  '部分或全部卡密暂未能自动发出。商家补货后系统会自动发卡，您也可以稍后再次查询订单。';
 
 const PAID_STATUSES = new Set(['TRADE_SUCCESS', 'TRADE_FINISHED', 'SUCCESS']);
 const FULFILLED = new Set(['delivered', 'pending_fulfillment', 'none']);
@@ -191,6 +196,9 @@ export function importCardKeys(
     syncProductStock(productId);
   });
   run();
+  if (imported > 0) {
+    autoFulfillPendingOrders({ productId });
+  }
   return { imported, skipped, total: parsed.length };
 }
 
@@ -249,17 +257,38 @@ export function validateCheckoutItems(
   return { ok: true, lines };
 }
 
-export function releaseExpiredReservations(): number {
+const EXPIRED_RESERVATION_WHERE = `
+  status = 'reserved'
+    AND reserved_until IS NOT NULL
+    AND reserved_until <= datetime('now', ?)
+    AND NOT EXISTS (
+      SELECT 1 FROM orders o
+      WHERE o.id = card_keys.order_id
+        AND o.payment_channel LIKE 'usdt_%'
+        AND o.status IN ('WAIT_BUYER_PAY', 'PAYING', 'CREATED')
+    )
+`;
+
+/**
+ * 释放已过预占期且超过宽限的卡密。
+ * 仍待支付的 USDT 订单在关单前不释放，避免宽限内到账后无卡可发。
+ * excludeOrderId：履约本单时切勿把本单预占提前释放。
+ */
+export function releaseExpiredReservations(excludeOrderId?: number): number {
   const db = getDb();
+  const grace = `-${RESERVATION_RELEASE_GRACE_MINUTES} minutes`;
   const run = db.transaction(() => {
+    const exclude = excludeOrderId != null
+      ? ` AND (order_id IS NULL OR order_id != ?)`
+      : '';
     const rows = db
       .prepare(
         `SELECT DISTINCT product_id FROM card_keys
-         WHERE status = 'reserved'
-           AND reserved_until IS NOT NULL
-           AND reserved_until <= datetime('now')`,
+         WHERE ${EXPIRED_RESERVATION_WHERE}${exclude}`,
       )
-      .all() as Array<{ product_id: number }>;
+      .all(
+        ...(excludeOrderId != null ? [grace, excludeOrderId] : [grace]),
+      ) as Array<{ product_id: number }>;
     if (!rows.length) return 0;
     const info = db
       .prepare(
@@ -268,11 +297,11 @@ export function releaseExpiredReservations(): number {
              order_id = NULL,
              order_item_id = NULL,
              reserved_until = NULL
-         WHERE status = 'reserved'
-           AND reserved_until IS NOT NULL
-           AND reserved_until <= datetime('now')`,
+         WHERE ${EXPIRED_RESERVATION_WHERE}${exclude}`,
       )
-      .run();
+      .run(
+        ...(excludeOrderId != null ? [grace, excludeOrderId] : [grace]),
+      );
     for (const row of rows) syncProductStock(row.product_id);
     return info.changes;
   });
@@ -312,6 +341,8 @@ export function createReservedCheckoutOrder(input: {
   subject?: string;
   buyerNote?: string | null;
   paymentChannel?: string;
+  paymentLabel?: string | null;
+  reservationMinutes?: number;
   items: Array<{ productId: number; quantity: number }>;
 }): { order: OrderRow; lines: CheckoutLine[]; totalAmount: string; subject: string } {
   const run = getDb().transaction(() => {
@@ -332,6 +363,7 @@ export function createReservedCheckoutOrder(input: {
       status: 'WAIT_BUYER_PAY',
       buyerNote: input.buyerNote ?? null,
       paymentChannel: input.paymentChannel,
+      paymentLabel: input.paymentLabel ?? null,
     });
     addOrderItems(
       order.id,
@@ -359,7 +391,11 @@ export function createReservedCheckoutOrder(input: {
            reserved_until = datetime('now', ?)
        WHERE id = ? AND status = 'unused'`,
     );
-    const ttl = `+${RESERVATION_TTL_MINUTES} minutes`;
+    const minutes = Math.max(
+      1,
+      Math.floor(input.reservationMinutes ?? RESERVATION_TTL_MINUTES),
+    );
+    const ttl = `+${minutes} minutes`;
 
     for (const it of orderItems) {
       if (!it.product_id) {
@@ -423,14 +459,16 @@ export function markOrderPaidAndDeliverKeys(
     buyer_logon_id?: string;
     raw_notify?: string;
     status?: string;
+    usdt_tx_hash?: string;
   },
 ): { assigned: number; fulfillmentStatus: string } {
   const run = getDb().transaction(() => {
-    releaseExpiredReservations();
     const order = getOrderByOutTradeNo(outTradeNo);
     if (!order) {
       return { assigned: 0, fulfillmentStatus: 'none' };
     }
+    // 先不释放本单预占：预占过期后迟到的支付通知仍应发出原卡密。
+    releaseExpiredReservations(order.id);
 
     const alreadyAttempted = FULFILLED.has(order.fulfillment_status);
 
@@ -439,6 +477,7 @@ export function markOrderPaidAndDeliverKeys(
       trade_no: patch.trade_no,
       buyer_logon_id: patch.buyer_logon_id,
       raw_notify: patch.raw_notify,
+      usdt_tx_hash: patch.usdt_tx_hash,
     });
 
     if (alreadyAttempted) {
@@ -600,6 +639,40 @@ export function fulfillPendingOrder(outTradeNo: string): {
   return run.immediate();
 }
 
+/**
+ * 对已支付且待补发的订单尝试自动发卡。库存不足则保持待补发；已发齐则不再重复分配。
+ */
+export function autoFulfillPendingOrders(opts?: {
+  productId?: number;
+  outTradeNo?: string;
+}): { tried: number; delivered: number } {
+  let orders: OrderRow[];
+  if (opts?.outTradeNo) {
+    const one = getOrderByOutTradeNo(opts.outTradeNo);
+    orders = one ? [one] : [];
+  } else {
+    orders = listPendingFulfillmentOrders();
+  }
+  let tried = 0;
+  let delivered = 0;
+  for (const order of orders) {
+    if (!isPaidStatus(order.status)) continue;
+    if (order.fulfillment_status !== 'pending_fulfillment') continue;
+    if (opts?.productId) {
+      const items = getOrderItems(order.id);
+      if (!items.some((it) => it.product_id === opts.productId)) continue;
+    }
+    tried += 1;
+    try {
+      const result = fulfillPendingOrder(order.out_trade_no);
+      if (result.fulfillmentStatus === 'delivered') delivered += 1;
+    } catch {
+      /* 单笔失败不影响其余待补发订单 */
+    }
+  }
+  return { tried, delivered };
+}
+
 export type PublicOrderView = {
   outTradeNo: string;
   subject: string;
@@ -618,9 +691,18 @@ export type PublicOrderView = {
   }>;
   message?: string;
   payMethod?: string;
+  usdt?: {
+    address: string;
+    amount: string;
+    network: string;
+    expireAt?: string;
+    paymentUrl?: string;
+    qrContent: string;
+  };
 };
 
 export function getPublicOrderView(outTradeNo: string): PublicOrderView | null {
+  autoFulfillPendingOrders({ outTradeNo });
   const order = getOrderByOutTradeNo(outTradeNo);
   if (!order) return null;
   const paid = isPaidStatus(order.status);
@@ -647,7 +729,24 @@ export function getPublicOrderView(outTradeNo: string): PublicOrderView | null {
       coverUrl: it.cover_url,
     })),
     message,
-    payMethod: paymentChannelLabel(order.payment_channel),
+    payMethod: paymentChannelLabel(order.payment_channel, order.payment_label),
+    usdt:
+      isUsdtPaymentChannel(order.payment_channel) && order.usdt_address && !paid
+        ? (() => {
+            const networkId = orderUsdtNetwork(order);
+            const def = networkId && isUsdtNetworkId(networkId) ? getUsdtNetwork(networkId) : null;
+            return {
+              address: order.usdt_address,
+              amount: order.usdt_amount || '',
+              network: def?.displayNetwork || 'USDT',
+              expireAt: order.usdt_expire_at || undefined,
+              qrContent:
+                networkId && isUsdtNetworkId(networkId)
+                  ? buildUsdtQrContent(networkId, order.usdt_address, order.usdt_amount || undefined)
+                  : order.usdt_address,
+            };
+          })()
+        : undefined,
   };
 }
 
@@ -674,6 +773,11 @@ export function startReservationReleaser(intervalMs = 60_000): void {
       releaseExpiredReservations();
     } catch (err) {
       console.error('[reservations] 释放过期预占失败', err);
+    }
+    try {
+      autoFulfillPendingOrders();
+    } catch (err) {
+      console.error('[fulfillment] 自动补发失败', err);
     }
   };
   tick();

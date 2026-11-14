@@ -27,7 +27,9 @@ import {
   epayConfigured,
   getOrderByOutTradeNo,
   loadEpaySettings,
+  loadPaymentMethodLabels,
   settingsConfigured,
+  usdtConfigured,
   updateOrder,
 } from '../db.js';
 import {
@@ -42,10 +44,17 @@ import {
   epayTypeFromMethod,
   isEpayPaymentChannel,
   isPaymentMethodId,
+  isUsdtPaymentChannel,
   listAvailablePaymentMethods,
-  paymentChannelLabel,
+  resolvePaymentLabel,
   type PaymentMethodId,
 } from '../paymentMethods.js';
+import {
+  assignUsdtPayment,
+  listEnabledUsdtPaymentMethods,
+  scanUsdtDeposits,
+  UsdtConfigError,
+} from '../usdt.js';
 
 const nano = customAlphabet('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', 12);
 
@@ -61,6 +70,9 @@ function availableMethods() {
     alipayConfigured: settingsConfigured(),
     epayConfigured: epayConfigured(),
     epayChannels: loadEpaySettings()?.channels ?? [],
+    usdtConfigured: usdtConfigured(),
+    usdtChannels: listEnabledUsdtPaymentMethods(),
+    labels: loadPaymentMethodLabels(),
   });
 }
 
@@ -70,6 +82,10 @@ async function maybeRefreshFromProvider(outTradeNo: string): Promise<void> {
   if (order.status === 'TRADE_CLOSED' || order.status === 'FAILED') return;
   if (!allowPublicTradeQuery(outTradeNo)) return;
   try {
+    if (isUsdtPaymentChannel(order.payment_channel)) {
+      await scanUsdtDeposits();
+      return;
+    }
     if (isEpayPaymentChannel(order.payment_channel)) {
       const result = await epayQuery(outTradeNo);
       if (!result.ok || !result.tradeStatus) return;
@@ -115,8 +131,9 @@ export async function storeRoutes(app: FastifyInstance): Promise<void> {
       ok: true,
       alipayConfigured: settingsConfigured(),
       epayConfigured: epayConfigured(),
+      usdtConfigured: usdtConfigured(),
       methods,
-      notifyEnabled: Boolean(access.notifyUrl || access.epayNotifyUrl),
+      notifyEnabled: Boolean(access.notifyUrl || access.epayNotifyUrl || access.usdtNotifyUrl),
       insecureHttp: access.insecureHttp,
       hint: access.insecureHttp ? INSECURE_HTTP_PAY_HINT : undefined,
     };
@@ -181,18 +198,52 @@ export async function storeRoutes(app: FastifyInstance): Promise<void> {
       const outTradeNo = genOutTradeNo();
       let orderId: number | null = null;
       const access = requestAccessFromRequest(req);
-      const payLabel = paymentChannelLabel(methodId);
+      const payLabel = resolvePaymentLabel(methodId, {
+        labels: loadPaymentMethodLabels(),
+      });
 
       try {
         const reserved = createReservedCheckoutOrder({
           outTradeNo,
           buyerNote: parsed.data.buyerNote?.trim() || null,
           paymentChannel: methodId,
+          paymentLabel: payLabel,
           items: parsed.data.items,
         });
         orderId = reserved.order.id;
         const lines = reserved.lines;
         const subject = reserved.subject;
+
+        if (isUsdtPaymentChannel(methodId)) {
+          const payment = assignUsdtPayment(outTradeNo);
+          const order = getOrderByOutTradeNo(outTradeNo)!;
+          return {
+            ok: true,
+            order: {
+              outTradeNo: order.out_trade_no,
+              subject: order.subject,
+              totalAmount: order.total_amount,
+              status: order.status,
+              qrCode: payment.qrContent,
+              payMethod: payLabel,
+              paymentMethod: methodId,
+              usdt: {
+                address: payment.address,
+                amount: payment.amount,
+                network: payment.network,
+                expireAt: payment.expireAt,
+                qrContent: payment.qrContent,
+              },
+              items: lines.map((l) => ({
+                productId: l.productId,
+                name: l.productName,
+                coverUrl: l.coverUrl,
+                unitPrice: l.unitPrice,
+                quantity: l.quantity,
+              })),
+            },
+          };
+        }
 
         const epayType = epayTypeFromMethod(methodId);
         if (epayType) {
@@ -242,6 +293,7 @@ export async function storeRoutes(app: FastifyInstance): Promise<void> {
               payUrl: result.payUrl || undefined,
               payScheme: result.urlScheme || undefined,
               payMethod: payLabel,
+              paymentMethod: methodId,
               items: lines.map((l) => ({
                 productId: l.productId,
                 name: l.productName,
@@ -311,7 +363,7 @@ export async function storeRoutes(app: FastifyInstance): Promise<void> {
         if (err instanceof StockError) {
           return reply.code(400).send({ ok: false, error: err.message });
         }
-        if (err instanceof AlipayConfigError || err instanceof EpayConfigError) {
+        if (err instanceof AlipayConfigError || err instanceof EpayConfigError || err instanceof UsdtConfigError) {
           return reply.code(400).send({ ok: false, error: err.message });
         }
         throw err;

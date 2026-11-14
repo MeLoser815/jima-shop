@@ -12,7 +12,6 @@
   "dependencies": {
     "@ant-design/icons": "^6.3.4",
     "antd": "^6.7.0",
-    "dayjs": "^1.11.23",
     "qrcode.react": "^4.2.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

@@ -2,7 +2,7 @@
   "name": "jima-shop",
   "version": "1.0.0",
   "private": true,
-  "description": "即码小店：可爱风商城 + 支付宝当面付 / 可选易支付（Node 22 + React + pnpm）",
+  "description": "即码小店：可爱风商城 + 支付宝当面付 / 可选易支付 / 可选多链 USDT（Node 22 + React + pnpm）",
   "scripts": {
     "dev": "pnpm -r --parallel --filter @jima/api --filter @jima/web run dev",
     "dev:api": "pnpm --filter @jima/api dev",

@@ -22,6 +22,7 @@ const {
   normalizeEpayGateway,
   buyerReturnUrl,
   validateEpayConfig,
+  isEpayNotifyPaid,
 } = await import('../src/epay.js');
 const { isPublicHttpUrl, isBlockedSsrfHost, buildAutoEpayNotifyUrl } =
   await import('../src/security.js');
@@ -29,6 +30,7 @@ const {
   listAvailablePaymentMethods,
   paymentChannelLabel,
   normalizeEpayChannels,
+  sanitizePaymentLabel,
 } = await import('../src/paymentMethods.js');
 const {
   getDb,
@@ -48,7 +50,7 @@ const {
   getPublicOrderView,
   countUnusedKeys,
 } = await import('../src/cardKeys.js');
-const { applyVerifiedTrade } = await import('../src/paymentSync.js');
+const { applyVerifiedTrade, processEpayNotify } = await import('../src/paymentSync.js');
 
 const TEST_KEY = 'test-merchant-key';
 
@@ -184,6 +186,26 @@ describe('epay sign and notify verification', () => {
       money: '1.00',
     });
     assert.equal(unpaid.tradeStatus, 'WAIT_BUYER_PAY');
+
+    const fromTradeStatus = parseEpayQueryResult({
+      code: '1',
+      trade_status: 'TRADE_SUCCESS',
+      status: '0',
+      money: '1.00',
+    });
+    assert.equal(fromTradeStatus.tradeStatus, 'TRADE_SUCCESS');
+  });
+
+  it('treats TRADE_SUCCESS and status=1 notify as paid, but not TRADE_CLOSED', () => {
+    assert.equal(isEpayNotifyPaid({ trade_status: 'TRADE_SUCCESS' }), true);
+    assert.equal(isEpayNotifyPaid({ trade_status: 'TRADE_FINISHED' }), true);
+    assert.equal(isEpayNotifyPaid({ trade_status: 'TRADE_CLOSED' }), false);
+    assert.equal(isEpayNotifyPaid({ trade_status: 'TRADE_CLOSED', status: '1' }), false);
+    assert.equal(isEpayNotifyPaid({ status: '1' }), true);
+    assert.equal(isEpayNotifyPaid({ status: 'TRADE_SUCCESS' }), true);
+    assert.equal(isEpayNotifyPaid({ status: 'TRADE_FINISHED' }), true);
+    assert.equal(isEpayNotifyPaid({ status: '0' }), false);
+    assert.equal(isEpayNotifyPaid({}), false);
   });
 });
 
@@ -211,7 +233,7 @@ describe('epay gateway SSRF guard', () => {
 });
 
 describe('available buyer payment methods', () => {
-  it('exposes only buyer-facing labels and hides epay alipay when official Alipay is already on', () => {
+  it('shows both official and epay Alipay, custom labels, and independent USDT', () => {
     assert.deepEqual(
       listAvailablePaymentMethods({
         alipayConfigured: true,
@@ -236,15 +258,31 @@ describe('available buyer payment methods', () => {
       alipayConfigured: true,
       epayConfigured: true,
       epayChannels: ['alipay', 'wxpay'],
+      labels: { alipay_f2f: '官方渠道', epay_alipay: '慢速通道' },
     });
     assert.deepEqual(both, [
-      { id: 'alipay_f2f', label: '支付宝' },
+      { id: 'alipay_f2f', label: '官方渠道' },
+      { id: 'epay_alipay', label: '慢速通道' },
       { id: 'epay_wxpay', label: '微信' },
     ]);
+    const withUsdt = listAvailablePaymentMethods({
+      alipayConfigured: false,
+      epayConfigured: true,
+      epayChannels: ['alipay'],
+      usdtConfigured: true,
+      labels: { usdt_trc20: 'USDT' },
+    });
+    assert.deepEqual(withUsdt, [
+      { id: 'epay_alipay', label: '支付宝' },
+      { id: 'usdt_trc20', label: 'USDT' },
+    ]);
+    assert.ok(!withUsdt.some((m) => m.id.startsWith('epay_') && m.id.includes('usdt')));
     assert.ok(both.every((m) => !/易支付|pid|网关/i.test(m.label)));
     assert.equal(paymentChannelLabel('epay_wxpay'), '微信');
     assert.equal(paymentChannelLabel('alipay_f2f'), '支付宝');
-    assert.deepEqual(normalizeEpayChannels(['wxpay', 'nope', 'wxpay', 'alipay']), [
+    assert.equal(paymentChannelLabel('usdt_trc20', '自定义U'), '自定义U');
+    assert.equal(sanitizePaymentLabel(' <b>官方渠道</b> '), '官方渠道');
+    assert.deepEqual(normalizeEpayChannels(['wxpay', 'nope', 'wxpay', 'alipay', 'usdt']), [
       'wxpay',
       'alipay',
     ]);
@@ -369,6 +407,20 @@ describe('epay settings, notify fulfillment', () => {
     });
     assert.equal(again.ok, true);
     assert.equal(getPublicOrderView('JMEPAYOK001')!.keys.length, 1);
+
+    const closedLater = applyVerifiedTrade({
+      outTradeNo: 'JMEPAYOK001',
+      tradeStatus: 'TRADE_CLOSED',
+      tradeNo: 'E-OK-1',
+      identity: { totalAmount: '1.00', pid: '1001' },
+      source: 'query',
+      provider: 'epay',
+    });
+    assert.equal(closedLater.ok, true);
+    const afterClose = getPublicOrderView('JMEPAYOK001');
+    assert.equal(afterClose!.paid, true);
+    assert.equal(afterClose!.keys.length, 1);
+    assert.equal(getOrderByOutTradeNo('JMEPAYOK001')?.status, 'TRADE_SUCCESS');
   });
 
   it('records payment_channel on cashier-like alipay orders', () => {
@@ -380,5 +432,102 @@ describe('epay settings, notify fulfillment', () => {
     });
     assert.equal(order.payment_channel, 'alipay_f2f');
     assert.equal(paymentChannelLabel(order.payment_channel), '支付宝');
+  });
+
+  it('delivers keys for both TRADE_SUCCESS and status=1 notifies; unpaid returns success without delivering', () => {
+    importCardKeys(productId, 'EPAY-KEY-003\nEPAY-KEY-004\nEPAY-KEY-005');
+
+    const signed = (params: Record<string, string>) => ({
+      ...params,
+      sign: signEpayParams(params, TEST_KEY),
+      sign_type: 'MD5',
+    });
+
+    createReservedCheckoutOrder({
+      outTradeNo: 'JMEPAYOK002',
+      paymentChannel: 'epay_alipay',
+      items: [{ productId, quantity: 1 }],
+    });
+    const standard = processEpayNotify(
+      signed({
+        pid: '1001',
+        trade_no: 'E-STD',
+        out_trade_no: 'JMEPAYOK002',
+        type: 'alipay',
+        name: '易支付测试商品',
+        money: '1.00',
+        trade_status: 'TRADE_SUCCESS',
+      }),
+    );
+    assert.equal(standard.body, 'success');
+    assert.equal(standard.reason, 'applied');
+    assert.equal(getPublicOrderView('JMEPAYOK002')!.paid, true);
+    assert.equal(getPublicOrderView('JMEPAYOK002')!.keys.length, 1);
+
+    createReservedCheckoutOrder({
+      outTradeNo: 'JMEPAYOK003',
+      paymentChannel: 'epay_alipay',
+      items: [{ productId, quantity: 1 }],
+    });
+    const modified = processEpayNotify(
+      signed({
+        pid: '1001',
+        trade_no: 'E-ST1',
+        out_trade_no: 'JMEPAYOK003',
+        type: 'alipay',
+        name: '易支付测试商品',
+        money: '1.00',
+        status: '1',
+      }),
+    );
+    assert.equal(modified.body, 'success');
+    assert.equal(modified.reason, 'applied');
+    assert.equal(getPublicOrderView('JMEPAYOK003')!.paid, true);
+    assert.equal(getPublicOrderView('JMEPAYOK003')!.keys.length, 1);
+    assert.ok(getPublicOrderView('JMEPAYOK003')!.keys[0].secret.startsWith('EPAY-KEY-'));
+
+    createReservedCheckoutOrder({
+      outTradeNo: 'JMEPAYOK004',
+      paymentChannel: 'epay_alipay',
+      items: [{ productId, quantity: 1 }],
+    });
+    const unpaid = processEpayNotify(
+      signed({
+        pid: '1001',
+        trade_no: 'E-WAIT',
+        out_trade_no: 'JMEPAYOK004',
+        type: 'alipay',
+        name: '易支付测试商品',
+        money: '1.00',
+        status: '0',
+      }),
+    );
+    assert.equal(unpaid.body, 'success');
+    assert.equal(unpaid.reason, 'not_paid');
+    assert.equal(getPublicOrderView('JMEPAYOK004')!.paid, false);
+    assert.equal(getPublicOrderView('JMEPAYOK004')!.keys.length, 0);
+
+    const mismatch = processEpayNotify(
+      signed({
+        pid: '1001',
+        trade_no: 'E-BAD',
+        out_trade_no: 'JMEPAYOK004',
+        type: 'alipay',
+        name: '易支付测试商品',
+        money: '9.99',
+        trade_status: 'TRADE_SUCCESS',
+      }),
+    );
+    assert.equal(mismatch.body, 'fail');
+    assert.equal(getPublicOrderView('JMEPAYOK004')!.paid, false);
+
+    const badSign = processEpayNotify({
+      pid: '1001',
+      out_trade_no: 'JMEPAYOK004',
+      money: '1.00',
+      trade_status: 'TRADE_SUCCESS',
+      sign: 'deadbeef',
+    });
+    assert.equal(badSign.body, 'fail');
   });
 });

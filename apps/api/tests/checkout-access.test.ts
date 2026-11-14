@@ -15,8 +15,12 @@ const {
   isInsecurePublicHttp,
   isLocalHostname,
   requestAccessFromRequest,
+  shouldTrustForwardedHeaders,
+  parseTrustProxyMode,
+  isTrustedProxyHop,
   INSECURE_HTTP_PAY_HINT,
 } = await import('../src/security.js');
+const { requestOrigin } = await import('../src/epay.js');
 const {
   inspectAlipaySettings,
   getDb,
@@ -48,6 +52,7 @@ describe('HTTP vs HTTPS checkout access', () => {
     const viaProxy = requestAccessFromRequest({
       protocol: 'http',
       hostname: '127.0.0.1',
+      remoteAddress: '127.0.0.1',
       headers: {
         host: '127.0.0.1:8001',
         'x-forwarded-proto': 'https',
@@ -71,6 +76,101 @@ describe('HTTP vs HTTPS checkout access', () => {
     const params = notifyUrl ? { notifyUrl } : {};
     assert.deepEqual(params, {});
     assert.equal('notifyUrl' in params, false);
+  });
+});
+
+describe('TRUST_PROXY forwarded header trust', () => {
+  const spoofed = {
+    protocol: 'http',
+    hostname: '203.0.113.10',
+    headers: {
+      host: '203.0.113.10:8001',
+      'x-forwarded-proto': 'https',
+      'x-forwarded-host': 'evil.example',
+    },
+  };
+
+  it('parses modes and treats loopback or RFC1918 as a trusted hop', () => {
+    assert.equal(parseTrustProxyMode(undefined), 'private');
+    assert.equal(parseTrustProxyMode('true'), 'all');
+    assert.equal(parseTrustProxyMode('false'), 'off');
+    assert.equal(parseTrustProxyMode('private'), 'private');
+    assert.equal(isTrustedProxyHop('127.0.0.1'), true);
+    assert.equal(isTrustedProxyHop('::ffff:127.0.0.1'), true);
+    assert.equal(isTrustedProxyHop('10.0.0.2'), true);
+    assert.equal(isTrustedProxyHop('192.168.1.1'), true);
+    assert.equal(isTrustedProxyHop('172.16.5.1'), true);
+    assert.equal(isTrustedProxyHop('203.0.113.10'), false);
+    assert.equal(isTrustedProxyHop('8.8.8.8'), false);
+  });
+
+  it('ignores client forwarded headers on a direct public connection', () => {
+    const access = requestAccessFromRequest({
+      ...spoofed,
+      remoteAddress: '203.0.113.10',
+    });
+    assert.equal(access.notifyUrl, undefined);
+    assert.equal(access.protocol.split(',')[0].trim() !== 'https' || access.host !== 'evil.example', true);
+    assert.equal(access.host.includes('evil.example'), false);
+    const origin = requestOrigin({
+      ...spoofed,
+      remoteAddress: '203.0.113.10',
+    });
+    assert.ok(!origin || !origin.includes('evil.example'));
+    assert.equal(shouldTrustForwardedHeaders('203.0.113.10', {}), false);
+  });
+
+  it('trusts forwarded headers from a private or loopback proxy hop', () => {
+    const access = requestAccessFromRequest({
+      protocol: 'http',
+      hostname: '127.0.0.1',
+      remoteAddress: '192.168.1.10',
+      headers: {
+        host: '127.0.0.1:8001',
+        'x-forwarded-proto': 'https',
+        'x-forwarded-host': 'shop.example.com',
+      },
+    });
+    assert.equal(access.notifyUrl, 'https://shop.example.com/api/payment/notify');
+    assert.equal(access.insecureHttp, false);
+  });
+
+  it('TRUST_PROXY=true trusts forwarded headers even from a public peer', () => {
+    const prev = process.env.TRUST_PROXY;
+    process.env.TRUST_PROXY = 'true';
+    try {
+      assert.equal(shouldTrustForwardedHeaders('203.0.113.10'), true);
+      const access = requestAccessFromRequest({
+        ...spoofed,
+        remoteAddress: '203.0.113.10',
+      });
+      assert.equal(access.notifyUrl, 'https://evil.example/api/payment/notify');
+    } finally {
+      if (prev === undefined) delete process.env.TRUST_PROXY;
+      else process.env.TRUST_PROXY = prev;
+    }
+  });
+
+  it('TRUST_PROXY=false ignores forwarded headers even from loopback', () => {
+    const prev = process.env.TRUST_PROXY;
+    process.env.TRUST_PROXY = 'false';
+    try {
+      assert.equal(shouldTrustForwardedHeaders('127.0.0.1'), false);
+      const access = requestAccessFromRequest({
+        protocol: 'http',
+        hostname: '127.0.0.1',
+        remoteAddress: '127.0.0.1',
+        headers: {
+          host: '127.0.0.1:8001',
+          'x-forwarded-proto': 'https',
+          'x-forwarded-host': 'shop.example.com',
+        },
+      });
+      assert.equal(access.notifyUrl, undefined);
+    } finally {
+      if (prev === undefined) delete process.env.TRUST_PROXY;
+      else process.env.TRUST_PROXY = prev;
+    }
   });
 });
 

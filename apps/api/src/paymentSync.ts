@@ -16,9 +16,15 @@ import {
   matchQueryToOrder,
   matchEpayNotifyToOrder,
   matchEpayQueryToOrder,
+  epayIdentityFromNotify,
   type PaymentIdentity,
   type EpayPaymentIdentity,
 } from './paymentMatch.js';
+import {
+  isEpayNotifyPaid,
+  epayNotifyTradeStatus,
+  verifyEpaySign,
+} from './epay.js';
 
 export type ApplyTradeResult =
   | { ok: true; order: OrderRow }
@@ -57,6 +63,14 @@ export function applyVerifiedTrade(input: {
 
   const status = input.tradeStatus || '';
   const paid = isPaidStatus(status);
+
+  // 已支付订单不可被后续 TRADE_CLOSED / FAILED 查单或通知降级，也不释放已售卡密。
+  if (isPaidStatus(order.status)) {
+    if (!paid) {
+      const updated = getOrderByOutTradeNo(input.outTradeNo);
+      return { ok: true, order: updated! };
+    }
+  }
 
   if (paid) {
     if (provider === 'epay') {
@@ -133,4 +147,40 @@ export function allowPublicTradeQuery(
 /** 仅用于测试：清空查单节流状态。 */
 export function resetAlipayQueryThrottleForTests(): void {
   lastTradeQueryAt.clear();
+}
+
+export type EpayNotifyHandleResult = {
+  body: 'success' | 'fail';
+  reason: string;
+};
+
+/**
+ * 处理易支付异步通知。验签失败或金额/商户号不一致回 fail；
+ * 未支付（含仅有 status=0 / TRADE_CLOSED）回 success 但不发卡。
+ */
+export function processEpayNotify(
+  params: Record<string, string>,
+): EpayNotifyHandleResult {
+  const settings = loadEpaySettings();
+  if (!settings?.key) return { body: 'fail', reason: 'unconfigured' };
+  if (!verifyEpaySign(params, settings.key)) {
+    return { body: 'fail', reason: 'bad_sign' };
+  }
+  const outTradeNo = String(params.out_trade_no || '').trim();
+  if (!outTradeNo) return { body: 'fail', reason: 'missing_out_trade_no' };
+  if (!isEpayNotifyPaid(params)) {
+    return { body: 'success', reason: 'not_paid' };
+  }
+  const tradeStatus = epayNotifyTradeStatus(params) || 'TRADE_SUCCESS';
+  const applied = applyVerifiedTrade({
+    outTradeNo,
+    tradeStatus,
+    tradeNo: params.trade_no,
+    identity: epayIdentityFromNotify(params),
+    rawNotify: JSON.stringify(params),
+    source: 'notify',
+    provider: 'epay',
+  });
+  if (!applied.ok) return { body: 'fail', reason: applied.reason };
+  return { body: 'success', reason: 'applied' };
 }

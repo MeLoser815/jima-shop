@@ -17,13 +17,18 @@ import {
   getDashboardStats,
   inspectAlipaySettings,
   inspectEpaySettings,
+  inspectUsdtSettings,
   loadAlipaySettings,
   loadEpaySettings,
+  loadPaymentMethodLabels,
   paymentConfigured,
   saveAlipaySettings,
   saveEpaySettings,
+  savePaymentMethodLabels,
+  saveUsdtSettings,
   settingsConfigured,
   epayConfigured,
+  usdtConfigured,
   needsAdminSetup,
   normalizeAdminListPage,
   normalizeAdminListPageSize,
@@ -45,7 +50,18 @@ import { validateAlipayConfig } from '../alipay.js';
 import { normalizeEpayGateway, validateEpayConfig, isSafeEpayGatewayUrl } from '../epay.js';
 import { maskSecret } from '../utils/crypto.js';
 import { isPublicHttpsUrl } from '../security.js';
-import { normalizeEpayChannels } from '../paymentMethods.js';
+import { normalizeEpayChannels, PAYMENT_LABEL_MAX_LEN } from '../paymentMethods.js';
+import {
+  applyAddressAutoEnable,
+  isUsdtReceiveAddress,
+  normalizeExpireMinutes,
+  normalizeUsdtRate,
+  summarizeUsdtConfig,
+  getUsdtScanStatus,
+} from '../usdt.js';
+import { USDT_NETWORK_LIST, isUsdtNetworkId, type UsdtNetworkId } from '../usdtChains.js';
+
+const paymentLabelsSchema = z.record(z.string().max(PAYMENT_LABEL_MAX_LEN * 2)).optional();
 
 const settingsSchema = z.object({
   appId: z.string().min(1, 'AppId 不能为空'),
@@ -55,6 +71,7 @@ const settingsSchema = z.object({
   storeId: z.string().optional(),
   sellerId: z.string().optional(),
   notifyUrl: z.string().url().optional().or(z.literal('')),
+  paymentMethodLabels: paymentLabelsSchema,
 });
 
 const epaySettingsSchema = z.object({
@@ -63,7 +80,70 @@ const epaySettingsSchema = z.object({
   pid: z.string().max(64).optional().default(''),
   key: z.string().max(128).optional().default(''),
   channels: z.array(z.string()).optional().default([]),
+  paymentMethodLabels: paymentLabelsSchema,
 });
+
+const usdtSettingsSchema = z.object({
+  enabled: z.boolean(),
+  address: z.string().max(80).optional().default(''),
+  rate: z.string().max(32).optional().default(''),
+  expireMinutes: z.number().int().optional(),
+  apiKey: z.string().max(128).optional().default(''),
+  networks: z
+    .array(
+      z.object({
+        id: z.string(),
+        enabled: z.boolean(),
+        address: z.string().max(80).optional().default(''),
+        apiKey: z.string().max(128).optional().default(''),
+      }),
+    )
+    .optional(),
+  paymentMethodLabels: paymentLabelsSchema,
+});
+
+
+function usdtAdminPayload() {
+  const usdtInfo = inspectUsdtSettings();
+  const usdtSettings = usdtInfo.settings;
+  const scan = getUsdtScanStatus();
+  const networks = USDT_NETWORK_LIST.map((def) => {
+    const n = usdtSettings?.networks[def.id];
+    return {
+      id: def.id,
+      channel: def.channel,
+      name: def.name,
+      displayNetwork: def.displayNetwork,
+      standard: def.standard,
+      decimals: def.decimals,
+      defaultLabel: def.defaultLabel,
+      enabled: Boolean(n?.enabled),
+      address: n?.address || '',
+      apiKeyMasked: n?.apiKey ? maskSecret(n.apiKey) : '',
+    };
+  });
+  return {
+    enabled: usdtInfo.enabled,
+    configured: usdtInfo.configured,
+    unreadable: usdtInfo.unreadable,
+    settings: {
+      address: usdtSettings?.address || '',
+      rate: usdtSettings?.rate || '',
+      expireMinutes: usdtSettings?.expireMinutes ?? 15,
+      apiKeyMasked: usdtSettings?.apiKey ? maskSecret(usdtSettings.apiKey) : '',
+      networks,
+    },
+    scanStatus: scan
+      ? {
+          ok: scan.ok,
+          at: scan.at,
+          error: scan.error,
+          scanned: scan.scanned,
+          applied: scan.applied,
+        }
+      : null,
+  };
+}
 
 const usernameSchema = z
   .string()
@@ -304,6 +384,8 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           channels: epaySettings?.channels ?? [],
         },
       };
+      const usdt = usdtAdminPayload();
+      const paymentMethodLabels = loadPaymentMethodLabels();
       if (!s) {
         return {
           ok: true,
@@ -320,6 +402,8 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
             notifyUrl: config.notifyUrl,
           },
           epay,
+          usdt,
+          paymentMethodLabels,
         };
       }
       return {
@@ -337,6 +421,8 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           notifyUrl: s.notifyUrl,
         },
         epay,
+        usdt,
+        paymentMethodLabels,
       };
     },
   );
@@ -388,6 +474,9 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
         sellerId: d.sellerId || '',
         notifyUrl,
       });
+      if (d.paymentMethodLabels) {
+        savePaymentMethodLabels(d.paymentMethodLabels);
+      }
       logAudit({
         actor: req.adminUsername || 'admin',
         action: 'settings.update',
@@ -471,6 +560,9 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
         key: (d.key || '').trim(),
         channels,
       });
+      if (d.paymentMethodLabels) {
+        savePaymentMethodLabels(d.paymentMethodLabels);
+      }
       logAudit({
         actor: req.adminUsername || 'admin',
         action: 'settings.epay.update',
@@ -508,6 +600,136 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  app.put(
+    '/api/admin/settings/usdt',
+    { preHandler: requireAdmin },
+    async (req, reply) => {
+      const parsed = usdtSettingsSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({
+          ok: false,
+          error: parsed.error.issues.map((i) => i.message).join('; '),
+        });
+      }
+      const d = parsed.data;
+      const existing = inspectUsdtSettings().settings;
+      const rateRaw = (d.rate || '').trim() || existing?.rate || '';
+      const expireMinutes = normalizeExpireMinutes(
+        d.expireMinutes ?? existing?.expireMinutes,
+      );
+      const rate = rateRaw ? normalizeUsdtRate(rateRaw) : '';
+      const networksPatch: Partial<
+        Record<UsdtNetworkId, { enabled: boolean; address?: string; apiKey?: string }>
+      > = {};
+      if (d.networks?.length) {
+        for (const row of d.networks) {
+          if (!isUsdtNetworkId(row.id)) {
+            return reply.code(400).send({ ok: false, error: `不支持的收款网络：${row.id}` });
+          }
+          const resolved = applyAddressAutoEnable(row.id, {
+            enabled: row.enabled,
+            address: row.address,
+          });
+          if (!resolved.ok) {
+            return reply.code(400).send({ ok: false, error: resolved.error });
+          }
+          networksPatch[row.id] = {
+            enabled: resolved.enabled,
+            address: resolved.address,
+            apiKey: (row.apiKey || '').trim(),
+          };
+        }
+      } else {
+        const address = (d.address || '').trim() || existing?.address || '';
+        if (address && !isUsdtReceiveAddress('trc20', address)) {
+          return reply.code(400).send({ ok: false, error: '请填写有效的 TRC20 收款地址' });
+        }
+        if (d.enabled && !address) {
+          return reply.code(400).send({ ok: false, error: '请至少启用一条收款链并填写收款地址' });
+        }
+        networksPatch.trc20 = {
+          enabled: d.enabled && Boolean(address),
+          address,
+          apiKey: (d.apiKey || '').trim(),
+        };
+      }
+      if (d.enabled) {
+        if (!rate) {
+          return reply
+            .code(400)
+            .send({ ok: false, error: '请填写有效汇率：1 USDT 等于多少人民币，最少 0.01' });
+        }
+        const enabledNets = USDT_NETWORK_LIST.filter((def) => {
+          const patch = networksPatch[def.id];
+          const addr = patch
+            ? (patch.address || '').trim()
+            : (existing?.networks[def.id]?.address || '').trim();
+          const on = patch ? patch.enabled : Boolean(existing?.networks[def.id]?.enabled);
+          return on && addr;
+        });
+        if (!enabledNets.length) {
+          return reply.code(400).send({ ok: false, error: '请至少填写一条收款链的有效地址' });
+        }
+      } else if (rateRaw && !normalizeUsdtRate(rateRaw)) {
+        return reply.code(400).send({ ok: false, error: '汇率格式不正确' });
+      }
+      saveUsdtSettings({
+        enabled: d.enabled,
+        rate: rate || rateRaw,
+        expireMinutes,
+        apiKey: (d.apiKey || '').trim(),
+        networks: networksPatch,
+      });
+      if (d.paymentMethodLabels) {
+        savePaymentMethodLabels(d.paymentMethodLabels);
+      }
+      logAudit({
+        actor: req.adminUsername || 'admin',
+        action: 'settings.usdt.update',
+        detail: {
+          enabled: d.enabled,
+          rate: rate || rateRaw,
+          expireMinutes,
+          networks: Object.keys(networksPatch),
+        },
+        ip: clientIp(req),
+      });
+      const report = summarizeUsdtConfig();
+      return {
+        ok: true,
+        configured: usdtConfigured(),
+        valid: report.ok,
+        warning: d.enabled && !report.ok ? report.error : undefined,
+        message: report.message,
+        ready: report.ready,
+        issues: report.issues,
+      };
+    },
+  );
+
+  app.post(
+    '/api/admin/settings/usdt/check',
+    { preHandler: requireAdmin },
+    async (_req, reply) => {
+      const report = summarizeUsdtConfig();
+      if (!report.ok) {
+        return reply.code(400).send({
+          ok: false,
+          error: report.message,
+          message: report.message,
+          ready: report.ready,
+          issues: report.issues,
+        });
+      }
+      return {
+        ok: true,
+        message: report.message,
+        ready: report.ready,
+        issues: report.issues,
+      };
+    },
+  );
+
   app.get(
     '/api/admin/status',
     { preHandler: requireAdmin },
@@ -516,6 +738,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       configured: paymentConfigured(),
       alipayConfigured: settingsConfigured(),
       epayConfigured: epayConfigured(),
+      usdtConfigured: usdtConfigured(),
       gateway: loadAlipaySettings()?.gateway ?? config.gateway,
       notifyUrl: loadAlipaySettings()?.notifyUrl ?? config.notifyUrl,
     }),
@@ -653,6 +876,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
         configured: paymentConfigured(),
         alipayConfigured: settingsConfigured(),
         epayConfigured: epayConfigured(),
+        usdtConfigured: usdtConfigured(),
       };
     },
   );

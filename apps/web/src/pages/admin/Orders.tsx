@@ -4,9 +4,12 @@ import type { TableProps } from 'antd';
 import { useSearchParams } from 'react-router-dom';
 import { api, type DeliveredKey } from '../../api';
 
-function paymentMethodLabel(channel?: string | null): string {
+function paymentMethodLabel(channel?: string | null, stored?: string | null): string {
+  const custom = (stored || '').trim();
+  if (custom) return custom;
   if (channel === 'epay_wxpay') return '微信';
   if (channel === 'epay_qqpay') return 'QQ钱包';
+  if (channel === 'usdt_trc20') return 'USDT';
   if (channel === 'epay_alipay' || channel === 'alipay_f2f' || !channel) return '支付宝';
   return '支付宝';
 }
@@ -20,6 +23,7 @@ type Row = {
   created_at: string;
   trade_no: string | null;
   payment_channel?: string | null;
+  payment_label?: string | null;
   buyer_note: string | null;
   fulfillment_status?: string;
   items: Array<{
@@ -186,7 +190,7 @@ export default function Orders() {
         title: '支付方式',
         dataIndex: 'payment_channel',
         width: 110,
-        render: (v: string | null | undefined) => paymentMethodLabel(v),
+        render: (v: string | null | undefined, r: Row) => paymentMethodLabel(v, r.payment_label),
       },
       {
         title: '支付状态',
@@ -245,7 +249,7 @@ export default function Orders() {
         订单列表
       </Typography.Title>
       <Typography.Paragraph type="secondary">
-        含购物车结账与收银台当面付订单。支付成功后会自动发放预占卡密；若当时库存不足会标记为「待补发」，补货后可在此点击「补发」。
+        含购物车结账与收银台当面付订单。支付成功后会自动发放预占卡密；若当时库存不足会标记为「待补发」。补货后系统会自动发卡，也可在此手动点「补发」。
       </Typography.Paragraph>
 
       <Space wrap style={{ marginBottom: 16 }}>
@@ -344,7 +348,7 @@ export default function Orders() {
               ) : r.fulfillment_status === 'pending_fulfillment' ? (
                 <div>
                   <Typography.Text type="warning">
-                    待补发：支付已成功，但当时卡密不足。请先在商品管理补充货源，再点击「补发」。补发前买家查单不会自动完成。
+                    待补发：支付已成功，但当时卡密不足。补充货源后系统会自动发卡，也可在此点击「补发」。
                   </Typography.Text>
                   <div style={{ marginTop: 8 }}>
                     <Button

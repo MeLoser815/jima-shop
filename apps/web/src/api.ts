@@ -88,6 +88,14 @@ export type PublicOrder = {
   }>;
   message?: string;
   payMethod?: string;
+  usdt?: {
+    address: string;
+    amount: string;
+    network: string;
+    expireAt?: string;
+    paymentUrl?: string;
+    qrContent: string;
+  };
 };
 
 export type ThemePreset = {
@@ -252,6 +260,7 @@ export const api = {
       ok: boolean;
       alipayConfigured: boolean;
       epayConfigured?: boolean;
+      usdtConfigured?: boolean;
       methods?: Array<{ id: string; label: string }>;
       notifyEnabled?: boolean;
       insecureHttp?: boolean;
@@ -284,6 +293,37 @@ export const api = {
           channels: string[];
         };
       };
+      usdt?: {
+        enabled: boolean;
+        configured: boolean;
+        unreadable: boolean;
+        settings: {
+          address: string;
+          rate: string;
+          expireMinutes: number;
+          apiKeyMasked: string;
+          networks?: Array<{
+            id: string;
+            channel: string;
+            name: string;
+            displayNetwork: string;
+            standard: string;
+            decimals: number;
+            defaultLabel: string;
+            enabled: boolean;
+            address: string;
+            apiKeyMasked: string;
+          }>;
+        };
+        scanStatus?: {
+          ok: boolean;
+          at?: string;
+          error?: string;
+          scanned?: number;
+          applied?: number;
+        } | null;
+      };
+      paymentMethodLabels?: Record<string, string>;
     }>('/api/admin/settings', { auth: true });
   },
   saveSettings(body: {
@@ -294,6 +334,7 @@ export const api = {
     storeId?: string;
     sellerId?: string;
     notifyUrl?: string;
+    paymentMethodLabels?: Record<string, string>;
   }) {
     return request<{
       ok: boolean;
@@ -318,6 +359,7 @@ export const api = {
     pid: string;
     key?: string;
     channels: string[];
+    paymentMethodLabels?: Record<string, string>;
   }) {
     return request<{
       ok: boolean;
@@ -333,6 +375,45 @@ export const api = {
   checkEpaySettings() {
     return request<{ ok: boolean; message?: string }>(
       '/api/admin/settings/epay/check',
+      { method: 'POST', auth: true },
+    );
+  },
+  saveUsdtSettings(body: {
+    enabled: boolean;
+    address?: string;
+    rate: string;
+    expireMinutes: number;
+    apiKey?: string;
+    networks?: Array<{
+      id: string;
+      enabled: boolean;
+      address?: string;
+      apiKey?: string;
+    }>;
+    paymentMethodLabels?: Record<string, string>;
+  }) {
+    return request<{
+      ok: boolean;
+      configured?: boolean;
+      valid?: boolean;
+      warning?: string;
+      message?: string;
+      ready?: Array<{ id: string; displayNetwork: string }>;
+      issues?: string[];
+    }>('/api/admin/settings/usdt', {
+      method: 'PUT',
+      auth: true,
+      body: JSON.stringify(body),
+    });
+  },
+  checkUsdtSettings() {
+    return request<{
+      ok: boolean;
+      message?: string;
+      ready?: Array<{ id: string; displayNetwork: string }>;
+      issues?: string[];
+    }>(
+      '/api/admin/settings/usdt/check',
       { method: 'POST', auth: true },
     );
   },
@@ -555,6 +636,15 @@ export const api = {
         payUrl?: string;
         payScheme?: string;
         payMethod?: string;
+        paymentMethod?: string;
+        usdt?: {
+          address: string;
+          amount: string;
+          network: string;
+          expireAt?: string;
+          paymentUrl?: string;
+          qrContent: string;
+        };
         items: Array<{
           productId: number;
           name: string;

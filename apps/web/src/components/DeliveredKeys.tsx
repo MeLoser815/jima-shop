@@ -52,7 +52,7 @@ export default function DeliveredKeys({
       {pending && (
         <Typography.Paragraph type="warning">
           {messageText ||
-            '部分或全部卡密暂未能自动发出，商家将尽快为您补发。补发完成后可通过查单查看；在商家处理前，再次查单不会自动完成发货。'}
+            '部分或全部卡密暂未能自动发出。商家补货后系统会自动发卡，您也可以稍后再次查询订单。'}
         </Typography.Paragraph>
       )}
       {keys.length > 0 && (

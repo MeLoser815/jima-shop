@@ -15,9 +15,19 @@ import { DEFAULT_ADMIN_BASE_PATH, normalizeAdminBasePath } from './adminPath.js'
 import {
   type EpayChannel,
   type PaymentMethodId,
+  type PaymentMethodLabels,
   isPaymentMethodId,
   normalizeEpayChannels,
+  normalizePaymentMethodLabels,
+  mergePaymentMethodLabels,
+  sanitizePaymentLabel,
 } from './paymentMethods.js';
+import {
+  USDT_NETWORK_IDS,
+  isUsdtNetworkId,
+  usdtNetworkFromChannel,
+  type UsdtNetworkId,
+} from './usdtChains.js';
 
 export type AlipaySettings = {
   appId: string;
@@ -37,6 +47,23 @@ export type EpaySettings = {
   channels: EpayChannel[];
 };
 
+export type UsdtNetworkSettings = {
+  enabled: boolean;
+  address: string;
+  apiKey: string;
+};
+
+export type UsdtSettings = {
+  enabled: boolean;
+  rate: string;
+  expireMinutes: number;
+  /** 兼容旧调用：等同于 TRC20 收款地址 */
+  address: string;
+  /** 兼容旧调用：等同于 TRC20 查询 Key */
+  apiKey: string;
+  networks: Record<UsdtNetworkId, UsdtNetworkSettings>;
+};
+
 export type OrderRow = {
   id: number;
   out_trade_no: string;
@@ -50,6 +77,13 @@ export type OrderRow = {
   raw_notify: string | null;
   fulfillment_status: string;
   payment_channel: string;
+  payment_label: string | null;
+  usdt_trade_id: string | null;
+  usdt_amount: string | null;
+  usdt_address: string | null;
+  usdt_expire_at: string | null;
+  usdt_tx_hash: string | null;
+  usdt_network: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -654,8 +688,234 @@ export function epayConfigured(): boolean {
   return inspectEpaySettings().configured;
 }
 
+export type UsdtSettingsInspection = {
+  configured: boolean;
+  unreadable: boolean;
+  enabled: boolean;
+  settings: UsdtSettings | null;
+};
+
+function parseEnabledFlag(raw: string | null): boolean {
+  return raw === '1' || raw === 'true';
+}
+
+export const DEFAULT_USDT_EXPIRE_MINUTES = 15;
+
+function parseExpireMinutes(raw: string | null): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n < 5 || n > 180) return DEFAULT_USDT_EXPIRE_MINUTES;
+  return n;
+}
+
+function emptyUsdtNetworks(): Record<UsdtNetworkId, UsdtNetworkSettings> {
+  const out = {} as Record<UsdtNetworkId, UsdtNetworkSettings>;
+  for (const id of USDT_NETWORK_IDS) {
+    out[id] = { enabled: false, address: '', apiKey: '' };
+  }
+  return out;
+}
+
+function decryptUsdtKey(enc: string | null | undefined): { key: string; unreadable: boolean } {
+  if (!enc) return { key: '', unreadable: false };
+  try {
+    return { key: decrypt(enc, config.encryptionKey), unreadable: false };
+  } catch {
+    return { key: '', unreadable: true };
+  }
+}
+
+function parseStoredUsdtNetworks(raw: string | null): {
+  networks: Record<UsdtNetworkId, UsdtNetworkSettings>;
+  unreadable: boolean;
+  present: boolean;
+} {
+  const networks = emptyUsdtNetworks();
+  if (!raw) return { networks, unreadable: false, present: false };
+  let obj: unknown;
+  try {
+    obj = JSON.parse(raw);
+  } catch {
+    return { networks, unreadable: false, present: false };
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { networks, unreadable: false, present: false };
+  }
+  let unreadable = false;
+  const root = obj as Record<string, unknown>;
+  for (const id of USDT_NETWORK_IDS) {
+    const row = root[id];
+    if (!row || typeof row !== 'object' || Array.isArray(row)) continue;
+    const rec = row as Record<string, unknown>;
+    const dec = decryptUsdtKey(
+      typeof rec.apiKeyEnc === 'string' ? rec.apiKeyEnc : '',
+    );
+    if (dec.unreadable) unreadable = true;
+    networks[id] = {
+      enabled: rec.enabled === true || rec.enabled === 1 || rec.enabled === '1',
+      address: String(rec.address || '').trim(),
+      apiKey: dec.key,
+    };
+  }
+  return { networks, unreadable, present: true };
+}
+
+function hasEnabledUsdtNetwork(settings: UsdtSettings): boolean {
+  return USDT_NETWORK_IDS.some((id) => {
+    const n = settings.networks[id];
+    return Boolean(n?.enabled && n.address.trim());
+  });
+}
+
+/** 读取独立 USDT 收款配置；API Key 解密失败时不抛错，以便后台仍可重新保存。 */
+export function inspectUsdtSettings(): UsdtSettingsInspection {
+  const enabled = parseEnabledFlag(getSetting('usdt_enabled'));
+  const legacyAddress = getSetting('usdt_address') || '';
+  const rate = getSetting('usdt_rate') || '';
+  const expireMinutes = parseExpireMinutes(getSetting('usdt_expire_minutes'));
+  const legacyKey = decryptUsdtKey(getSetting('usdt_trongrid_key_enc'));
+  const stored = parseStoredUsdtNetworks(getSetting('usdt_networks'));
+  const networks = stored.networks;
+  // 旧版只存了 TRC20 地址时，自动映射为已启用的 trc20，保持兼容。
+  if (!stored.present && legacyAddress.trim()) {
+    networks.trc20 = {
+      enabled: true,
+      address: legacyAddress.trim(),
+      apiKey: legacyKey.key,
+    };
+  } else if (!networks.trc20.address && legacyAddress.trim()) {
+    networks.trc20 = {
+      ...networks.trc20,
+      address: legacyAddress.trim(),
+      apiKey: networks.trc20.apiKey || legacyKey.key,
+    };
+  } else if (!networks.trc20.apiKey && legacyKey.key) {
+    networks.trc20.apiKey = legacyKey.key;
+  }
+  const address = networks.trc20.address || legacyAddress;
+  const apiKey = networks.trc20.apiKey || legacyKey.key;
+  if (
+    !legacyKey.key &&
+    !legacyAddress &&
+    !rate &&
+    !enabled &&
+    !stored.present
+  ) {
+    return { configured: false, unreadable: false, enabled: false, settings: null };
+  }
+  const unreadable = stored.unreadable || legacyKey.unreadable;
+  const settings: UsdtSettings = {
+    enabled,
+    rate,
+    expireMinutes,
+    address,
+    apiKey,
+    networks,
+  };
+  const configured = Boolean(enabled && rate.trim() && hasEnabledUsdtNetwork(settings));
+  return { configured, unreadable, enabled, settings };
+}
+
+export function loadUsdtSettings(): UsdtSettings | null {
+  return inspectUsdtSettings().settings;
+}
+
+export function usdtConfigured(): boolean {
+  const info = inspectUsdtSettings();
+  return Boolean(info.configured && info.settings?.enabled && hasEnabledUsdtNetwork(info.settings));
+}
+
+export function listEnabledUsdtChannels(): UsdtNetworkId[] {
+  const settings = loadUsdtSettings();
+  if (!settings?.enabled || !settings.rate.trim()) return [];
+  return USDT_NETWORK_IDS.filter((id) => {
+    const n = settings.networks[id];
+    return Boolean(n?.enabled && n.address.trim());
+  });
+}
+
+export function saveUsdtSettings(input: {
+  enabled: boolean;
+  rate: string;
+  expireMinutes?: number;
+  address?: string;
+  apiKey?: string;
+  networks?: Partial<
+    Record<UsdtNetworkId, { enabled: boolean; address?: string; apiKey?: string }>
+  >;
+}): void {
+  const existing = inspectUsdtSettings().settings;
+  const networks = existing?.networks ? { ...existing.networks } : emptyUsdtNetworks();
+  // 复制一层，避免改到缓存对象
+  for (const id of USDT_NETWORK_IDS) {
+    networks[id] = { ...networks[id] };
+  }
+  if (input.networks) {
+    for (const id of USDT_NETWORK_IDS) {
+      const patch = input.networks[id];
+      if (!patch) continue;
+      networks[id].enabled = Boolean(patch.enabled);
+      if (patch.address != null) networks[id].address = patch.address.trim();
+      const key = (patch.apiKey ?? '').trim();
+      if (key) networks[id].apiKey = key;
+    }
+  }
+  if (input.address != null && !input.networks?.trc20) {
+    networks.trc20.address = input.address.trim();
+    if (!existing || !existing.networks.trc20.address) {
+      networks.trc20.enabled = input.enabled && Boolean(networks.trc20.address);
+    }
+  }
+  const trc20Key = (input.networks?.trc20?.apiKey ?? input.apiKey ?? '').trim();
+  if (trc20Key) networks.trc20.apiKey = trc20Key;
+
+  setSetting('usdt_enabled', input.enabled ? '1' : '0');
+  setSetting('usdt_rate', input.rate.trim());
+  const minutes = input.expireMinutes ?? DEFAULT_USDT_EXPIRE_MINUTES;
+  setSetting('usdt_expire_minutes', String(minutes));
+  setSetting('usdt_address', networks.trc20.address);
+  if (networks.trc20.apiKey) {
+    setSetting('usdt_trongrid_key_enc', encrypt(networks.trc20.apiKey, config.encryptionKey));
+  }
+  const stored: Record<string, { enabled: boolean; address: string; apiKeyEnc?: string }> = {};
+  for (const id of USDT_NETWORK_IDS) {
+    const row = networks[id];
+    stored[id] = { enabled: row.enabled, address: row.address };
+    if (row.apiKey) {
+      stored[id].apiKeyEnc = encrypt(row.apiKey, config.encryptionKey);
+    } else {
+      // 保留已加密的旧 Key
+      const prev = parseStoredUsdtNetworks(getSetting('usdt_networks')).networks[id];
+      const prevEncSource = getSetting('usdt_networks');
+      if (id === 'trc20' && getSetting('usdt_trongrid_key_enc') && !prev.apiKey && existing?.networks.trc20.apiKey) {
+        stored[id].apiKeyEnc = getSetting('usdt_trongrid_key_enc') || undefined;
+      }
+      if (prevEncSource) {
+        try {
+          const raw = JSON.parse(prevEncSource) as Record<string, { apiKeyEnc?: string }>;
+          if (raw[id]?.apiKeyEnc && !stored[id].apiKeyEnc) {
+            stored[id].apiKeyEnc = raw[id].apiKeyEnc;
+          }
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+  }
+  setSetting('usdt_networks', JSON.stringify(stored));
+}
+
+export function loadPaymentMethodLabels(): PaymentMethodLabels {
+  return normalizePaymentMethodLabels(getSetting('payment_method_labels'));
+}
+
+export function savePaymentMethodLabels(patch: unknown): PaymentMethodLabels {
+  const merged = mergePaymentMethodLabels(loadPaymentMethodLabels(), patch);
+  setSetting('payment_method_labels', JSON.stringify(merged));
+  return merged;
+}
+
 export function paymentConfigured(): boolean {
-  return settingsConfigured() || epayConfigured();
+  return settingsConfigured() || epayConfigured() || usdtConfigured();
 }
 
 export function saveEpaySettings(input: {
@@ -683,15 +943,17 @@ export function createOrder(input: {
   status?: string;
   buyerNote?: string | null;
   paymentChannel?: PaymentMethodId | string;
+  paymentLabel?: string | null;
 }): OrderRow {
   const channel =
     input.paymentChannel && isPaymentMethodId(input.paymentChannel)
       ? input.paymentChannel
       : 'alipay_f2f';
+  const label = sanitizePaymentLabel(input.paymentLabel ?? '') || null;
   getDb()
     .prepare(
-      `INSERT INTO orders(out_trade_no, subject, total_amount, status, qr_code, buyer_note, payment_channel)
-       VALUES(?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO orders(out_trade_no, subject, total_amount, status, qr_code, buyer_note, payment_channel, payment_label)
+       VALUES(?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.outTradeNo,
@@ -701,6 +963,7 @@ export function createOrder(input: {
       input.qrCode ?? null,
       input.buyerNote ?? null,
       channel,
+      label,
     );
   return getOrderByOutTradeNo(input.outTradeNo)!;
 }
@@ -748,6 +1011,142 @@ export function getOrderByOutTradeNo(outTradeNo: string): OrderRow | null {
   );
 }
 
+export function orderUsdtNetwork(order: Pick<OrderRow, 'usdt_network' | 'payment_channel'>): string | null {
+  const stored = (order.usdt_network || '').trim();
+  if (isUsdtNetworkId(stored)) return stored;
+  return usdtNetworkFromChannel(order.payment_channel);
+}
+
+export function getOrderByUsdtTxHash(
+  txHash: string,
+  network?: string | null,
+): OrderRow | null {
+  const hash = txHash.trim();
+  if (!hash) return null;
+  if (network) {
+    return (
+      (getDb()
+        .prepare(
+          `SELECT * FROM orders
+           WHERE usdt_tx_hash = ? AND usdt_network = ?
+             AND usdt_tx_hash IS NOT NULL AND usdt_tx_hash != ''`,
+        )
+        .get(hash, network) as OrderRow | undefined) ?? null
+    );
+  }
+  return (
+    (getDb()
+      .prepare(
+        `SELECT * FROM orders
+         WHERE usdt_tx_hash = ? AND usdt_tx_hash IS NOT NULL AND usdt_tx_hash != ''`,
+      )
+      .get(hash) as OrderRow | undefined) ?? null
+  );
+}
+
+export function listPendingUsdtOrders(): OrderRow[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM orders
+       WHERE payment_channel LIKE 'usdt_%'
+         AND status IN ('WAIT_BUYER_PAY', 'PAYING', 'CREATED')
+       ORDER BY id ASC`,
+    )
+    .all() as OrderRow[];
+}
+
+const PROVIDER_PENDING_STATUSES = "('WAIT_BUYER_PAY', 'PAYING', 'CREATED')";
+
+/** 待服务端对账的支付宝当面付 / 易支付订单（不含 USDT）。 */
+export function listPendingProviderPaymentOrders(maxAgeDays = 7): OrderRow[] {
+  const days = Math.max(1, Math.floor(maxAgeDays));
+  return getDb()
+    .prepare(
+      `SELECT * FROM orders
+       WHERE status IN ${PROVIDER_PENDING_STATUSES}
+         AND (
+           payment_channel = 'alipay_f2f'
+           OR payment_channel LIKE 'epay_%'
+         )
+         AND created_at >= datetime('now', ?)
+       ORDER BY id ASC`,
+    )
+    .all(`-${days} days`) as OrderRow[];
+}
+
+export function listPendingFulfillmentOrders(): OrderRow[] {
+  return getDb()
+    .prepare(
+      `SELECT * FROM orders
+       WHERE fulfillment_status = 'pending_fulfillment'
+         AND status IN ('TRADE_SUCCESS', 'TRADE_FINISHED', 'SUCCESS')
+       ORDER BY id ASC`,
+    )
+    .all() as OrderRow[];
+}
+
+/** 订单到期后仍占用唯一金额、并推迟关单/释放卡密的宽限（分钟）。 */
+export const USDT_FULFILL_GRACE_MINUTES = 20;
+
+function parseExpireMs(raw: string | null | undefined): number | null {
+  if (!raw) return null;
+  const s = raw.trim();
+  if (!s) return null;
+  const t = Date.parse(s.includes('T') ? s : `${s.replace(' ', 'T')}Z`);
+  return Number.isFinite(t) ? t : null;
+}
+
+export function usdtGraceDeadlineMs(expireAt: string | null | undefined): number | null {
+  const t = parseExpireMs(expireAt);
+  if (t == null) return null;
+  return t + USDT_FULFILL_GRACE_MINUTES * 60_000;
+}
+
+export function listExpiredUsdtOrders(now = new Date()): OrderRow[] {
+  const nowMs = now.getTime();
+  return listPendingUsdtOrders().filter((o) => {
+    const deadline = usdtGraceDeadlineMs(o.usdt_expire_at);
+    return deadline != null && deadline <= nowMs;
+  });
+}
+
+function usdtAddressMatches(a: string | null | undefined, b: string | null | undefined): boolean {
+  const left = (a || '').trim();
+  const right = (b || '').trim();
+  if (!left || !right) return false;
+  if (left === right) return true;
+  return left.toLowerCase() === right.toLowerCase();
+}
+
+export function listOccupiedUsdtAmounts(
+  address: string,
+  now = new Date(),
+  network?: string | null,
+): string[] {
+  const nowMs = now.getTime();
+  const addr = address.trim();
+  const net = (network || '').trim();
+  return listPendingUsdtOrders()
+    .filter((o) => {
+      if (addr && o.usdt_address && !usdtAddressMatches(o.usdt_address, addr)) return false;
+      if (net && orderUsdtNetwork(o) !== net) return false;
+      if (!o.usdt_amount) return false;
+      const deadline = usdtGraceDeadlineMs(o.usdt_expire_at);
+      return deadline == null || deadline > nowMs;
+    })
+    .map((o) => o.usdt_amount as string);
+}
+
+export function setOrderReservationUntil(orderId: number, expireAtIso: string): void {
+  getDb()
+    .prepare(
+      `UPDATE card_keys
+       SET reserved_until = ?
+       WHERE order_id = ? AND status = 'reserved'`,
+    )
+    .run(expireAtIso, orderId);
+}
+
 export function updateOrder(
   outTradeNo: string,
   patch: Partial<{
@@ -758,6 +1157,13 @@ export function updateOrder(
     raw_notify: string;
     fulfillment_status: string;
     payment_channel: string;
+    payment_label: string;
+    usdt_trade_id: string;
+    usdt_amount: string;
+    usdt_address: string;
+    usdt_expire_at: string;
+    usdt_tx_hash: string;
+    usdt_network: string;
   }>,
 ): void {
   const fields: string[] = [];

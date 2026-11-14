@@ -14,23 +14,21 @@ import {
   EpayConfigError,
   collectEpayParams,
   epayQuery,
-  verifyEpaySign,
 } from '../epay.js';
+import { processUsdtNotify, scanUsdtDeposits, UsdtConfigError } from '../usdt.js';
 import { notifyUrlFromRequest } from '../security.js';
 import {
   createOrder,
   getOrderByOutTradeNo,
-  loadEpaySettings,
   updateOrder,
 } from '../db.js';
 import { getPublicOrderView } from '../cardKeys.js';
 import { requireAdmin } from '../middleware/auth.js';
 import {
-  epayIdentityFromNotify,
   paymentIdentityFromNotify,
 } from '../paymentMatch.js';
-import { applyVerifiedTrade } from '../paymentSync.js';
-import { isEpayPaymentChannel } from '../paymentMethods.js';
+import { applyVerifiedTrade, processEpayNotify } from '../paymentSync.js';
+import { isEpayPaymentChannel, isUsdtPaymentChannel } from '../paymentMethods.js';
 
 const nano = customAlphabet('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', 16);
 
@@ -263,6 +261,16 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
       }
       try {
         const local = getOrderByOutTradeNo(parsed.data.outTradeNo);
+        if (isUsdtPaymentChannel(local?.payment_channel)) {
+          await scanUsdtDeposits();
+          const order = getPublicOrderView(parsed.data.outTradeNo);
+          return {
+            ok: true,
+            tradeStatus: order?.status,
+            tradeNo: order?.tradeNo,
+            order,
+          };
+        }
         const useEpay = isEpayPaymentChannel(local?.payment_channel);
         if (useEpay) {
           const result = await epayQuery(parsed.data.outTradeNo);
@@ -350,7 +358,7 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
           order: getPublicOrderView(parsed.data.outTradeNo),
         };
       } catch (err) {
-        if (err instanceof AlipayConfigError || err instanceof EpayConfigError) {
+        if (err instanceof AlipayConfigError || err instanceof EpayConfigError || err instanceof UsdtConfigError) {
           return reply.code(400).send({ ok: false, error: err.message });
         }
         throw err;
@@ -417,7 +425,7 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
 
   /**
    * 易支付异步通知（GET / POST）。
-   * 验签通过且 trade_status=TRADE_SUCCESS 后履约发卡，必须返回纯文本 success / fail。
+   * 验签通过且已支付后履约发卡；未支付回 success 但不发卡。必须返回纯文本 success / fail。
    */
   const handleEpayNotify = async (req: FastifyRequest, reply: FastifyReply) => {
     const params = collectEpayParams({
@@ -425,45 +433,46 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
       ...(req.body as Record<string, unknown> | undefined),
     });
     const outTradeNo = params.out_trade_no;
-    const tradeStatus = params.trade_status;
-    const settings = loadEpaySettings();
-    if (!settings?.key) {
-      app.log.warn({ outTradeNo }, '易支付通知时尚未配置密钥');
-      return reply.code(400).type('text/plain').send('fail');
-    }
-    if (!verifyEpaySign(params, settings.key)) {
-      app.log.warn({ outTradeNo, tradeStatus }, '易支付通知验签失败');
-      return reply.code(400).type('text/plain').send('fail');
-    }
-    if (!outTradeNo) {
-      app.log.warn({ tradeStatus }, '易支付通知缺少 out_trade_no');
-      return reply.code(400).type('text/plain').send('fail');
-    }
-    if (tradeStatus !== 'TRADE_SUCCESS' && tradeStatus !== 'TRADE_FINISHED') {
-      return reply.type('text/plain').send('success');
-    }
-    const applied = applyVerifiedTrade({
-      outTradeNo,
-      tradeStatus,
-      tradeNo: params.trade_no,
-      identity: epayIdentityFromNotify(params),
-      rawNotify: JSON.stringify(params),
-      source: 'notify',
-      provider: 'epay',
-    });
-    if (!applied.ok) {
+    const result = processEpayNotify(params);
+    if (result.body === 'fail') {
       app.log.warn(
-        { outTradeNo, tradeStatus, reason: applied.reason },
-        applied.orderMissing
-          ? '易支付通知对应订单不存在'
-          : '易支付通知与本地订单核对失败',
+        { outTradeNo, reason: result.reason, tradeStatus: params.trade_status, status: params.status },
+        result.reason === 'bad_sign'
+          ? '易支付通知验签失败'
+          : result.reason === 'unconfigured'
+            ? '易支付通知时尚未配置密钥'
+            : '易支付通知处理失败',
       );
-      return reply.type('text/plain').send('fail');
+      return reply.code(400).type('text/plain').send('fail');
     }
-    app.log.info({ outTradeNo, tradeStatus, outcome: 'applied' }, '易支付通知已处理');
+    if (result.reason === 'applied') {
+      app.log.info(
+        { outTradeNo, tradeStatus: params.trade_status, status: params.status, outcome: 'applied' },
+        '易支付通知已处理',
+      );
+    }
     return reply.type('text/plain').send('success');
   };
 
   app.get('/api/payment/epay/notify', handleEpayNotify);
   app.post('/api/payment/epay/notify', handleEpayNotify);
+
+  /**
+   * 可选 USDT 补通知。必须校验交易哈希（并尽量链上核对）或服务端签名，不能无校验发卡。
+   */
+  const handleUsdtNotify = async (req: FastifyRequest, reply: FastifyReply) => {
+    const params = {
+      ...((req.query as Record<string, unknown> | undefined) ?? {}),
+      ...((req.body as Record<string, unknown> | undefined) ?? {}),
+    };
+    const result = await processUsdtNotify(params);
+    if (!result.ok) {
+      app.log.warn({ reason: result.reason, tx: params.tx_hash }, 'USDT 通知未履约');
+      return reply.code(400).send({ ok: false, error: '通知校验失败' });
+    }
+    return reply.send({ ok: true });
+  };
+
+  app.get('/api/payment/usdt/notify', handleUsdtNotify);
+  app.post('/api/payment/usdt/notify', handleUsdtNotify);
 }

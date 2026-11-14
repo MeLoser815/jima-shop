@@ -10,6 +10,7 @@ import {
   type OrderItemRow,
   type OrderRow,
 } from './db.js';
+import { paymentChannelLabel } from './paymentMethods.js';
 import { fenToYuan, yuanToFen } from './money.js';
 import { CARD_IMPORT_MAX_CHARS } from './security.js';
 import { formatCardKeyText, parseCardKeyLines } from './utils/cardKeyParse.js';
@@ -310,6 +311,7 @@ export function createReservedCheckoutOrder(input: {
   outTradeNo: string;
   subject?: string;
   buyerNote?: string | null;
+  paymentChannel?: string;
   items: Array<{ productId: number; quantity: number }>;
 }): { order: OrderRow; lines: CheckoutLine[]; totalAmount: string; subject: string } {
   const run = getDb().transaction(() => {
@@ -329,6 +331,7 @@ export function createReservedCheckoutOrder(input: {
       qrCode: null,
       status: 'WAIT_BUYER_PAY',
       buyerNote: input.buyerNote ?? null,
+      paymentChannel: input.paymentChannel,
     });
     addOrderItems(
       order.id,
@@ -614,6 +617,7 @@ export type PublicOrderView = {
     coverUrl: string;
   }>;
   message?: string;
+  payMethod?: string;
 };
 
 export function getPublicOrderView(outTradeNo: string): PublicOrderView | null {
@@ -643,6 +647,7 @@ export function getPublicOrderView(outTradeNo: string): PublicOrderView | null {
       coverUrl: it.cover_url,
     })),
     message,
+    payMethod: paymentChannelLabel(order.payment_channel),
   };
 }
 

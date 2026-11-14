@@ -1,9 +1,26 @@
 import { useEffect, useState } from 'react';
-import { Alert, App, Button, Form, Input, Select, Typography } from 'antd';
+import {
+  Alert,
+  App,
+  Button,
+  Checkbox,
+  Divider,
+  Form,
+  Input,
+  Select,
+  Switch,
+  Typography,
+} from 'antd';
 import { api } from '../../api';
 
 const SANDBOX = 'https://openapi-sandbox.dl.alipaydev.com/gateway.do';
 const PROD = 'https://openapi.alipay.com/gateway.do';
+
+const EPAY_CHANNEL_OPTIONS = [
+  { value: 'alipay', label: '支付宝' },
+  { value: 'wxpay', label: '微信' },
+  { value: 'qqpay', label: 'QQ钱包' },
+];
 
 function suggestedNotifyUrl(): string {
   if (typeof window === 'undefined') return '';
@@ -28,15 +45,35 @@ type FormVals = {
   notifyUrl: string;
 };
 
+type EpayFormVals = {
+  enabled: boolean;
+  gateway: string;
+  pid: string;
+  key: string;
+  channels: string[];
+};
+
 export default function Settings() {
   const { message } = App.useApp();
   const [form] = Form.useForm<FormVals>();
+  const [epayForm] = Form.useForm<EpayFormVals>();
   const [configured, setConfigured] = useState(false);
   const [unreadable, setUnreadable] = useState(false);
   const [masked, setMasked] = useState({ priv: '', pub: '' });
   const [busy, setBusy] = useState(false);
   const [checking, setChecking] = useState(false);
   const [feedback, setFeedback] = useState<{
+    type: 'success' | 'error' | 'warning';
+    text: string;
+  } | null>(null);
+
+  const [epayEnabled, setEpayEnabled] = useState(false);
+  const [epayConfigured, setEpayConfigured] = useState(false);
+  const [epayUnreadable, setEpayUnreadable] = useState(false);
+  const [epayKeyMasked, setEpayKeyMasked] = useState('');
+  const [epayBusy, setEpayBusy] = useState(false);
+  const [epayChecking, setEpayChecking] = useState(false);
+  const [epayFeedback, setEpayFeedback] = useState<{
     type: 'success' | 'error' | 'warning';
     text: string;
   } | null>(null);
@@ -60,9 +97,23 @@ export default function Settings() {
           privateKey: '',
           alipayPublicKey: '',
         });
+        const epay = res.epay;
+        if (epay) {
+          setEpayEnabled(epay.enabled);
+          setEpayConfigured(epay.configured);
+          setEpayUnreadable(epay.unreadable);
+          setEpayKeyMasked(epay.settings.keyMasked || '');
+          epayForm.setFieldsValue({
+            enabled: epay.enabled,
+            gateway: epay.settings.gateway || '',
+            pid: epay.settings.pid || '',
+            key: '',
+            channels: epay.settings.channels || [],
+          });
+        }
       })
       .catch((e) => message.error((e as Error).message));
-  }, [form, message]);
+  }, [form, epayForm, message]);
 
   async function save() {
     const v = await form.validateFields();
@@ -121,11 +172,77 @@ export default function Settings() {
     }
   }
 
+  async function saveEpay() {
+    const v = await epayForm.validateFields();
+    setEpayBusy(true);
+    setEpayFeedback(null);
+    try {
+      const saved = await api.saveEpaySettings({
+        enabled: v.enabled,
+        gateway: v.gateway || '',
+        pid: v.pid || '',
+        key: v.key || '',
+        channels: v.channels || [],
+      });
+      const res = await api.getSettings();
+      if (res.epay) {
+        setEpayEnabled(res.epay.enabled);
+        setEpayConfigured(res.epay.configured);
+        setEpayUnreadable(res.epay.unreadable);
+        setEpayKeyMasked(res.epay.settings.keyMasked || '');
+        epayForm.setFieldsValue({
+          enabled: res.epay.enabled,
+          gateway: res.epay.settings.gateway || '',
+          pid: res.epay.settings.pid || '',
+          key: '',
+          channels: res.epay.settings.channels || [],
+        });
+      }
+      if (saved.warning) {
+        const text = `配置已保存，但校验未通过：${saved.warning}`;
+        setEpayFeedback({ type: 'warning', text });
+        message.warning(text);
+      } else {
+        const text = v.enabled ? '易支付配置已保存' : '已关闭易支付收款';
+        setEpayFeedback({ type: 'success', text });
+        message.success(text);
+      }
+    } catch (e) {
+      const text = (e as Error).message || '保存失败，请稍后重试';
+      setEpayFeedback({ type: 'error', text });
+      message.error(text);
+    } finally {
+      setEpayBusy(false);
+    }
+  }
+
+  async function checkEpay() {
+    setEpayChecking(true);
+    setEpayFeedback(null);
+    try {
+      const res = await api.checkEpaySettings();
+      const text = res.message || '配置校验通过';
+      setEpayFeedback({ type: 'success', text });
+      message.success(text);
+    } catch (e) {
+      const text = (e as Error).message || '配置校验失败';
+      setEpayFeedback({ type: 'error', text });
+      message.error(text);
+    } finally {
+      setEpayChecking(false);
+    }
+  }
+
   return (
     <div style={{ maxWidth: 720 }}>
-      <Typography.Title level={3}>支付宝收款配置</Typography.Title>
+      <Typography.Title level={3}>收款配置</Typography.Title>
       <Typography.Paragraph type="secondary">
-        在此填写 AppId、应用私钥（商户密钥）和支付宝公钥（商户 key）即可收款。站点用 HTTPS 域名访问时，系统会按当前域名自动设置支付宝回调地址，一般不必再填。
+        可只开通支付宝当面付，也可额外或单独开通易支付。两种方式都配置时，买家结账可按已开通渠道选择。站点用 HTTPS 域名访问时，系统会按当前域名自动设置异步通知地址，一般不必再填。
+      </Typography.Paragraph>
+
+      <Typography.Title level={4}>支付宝当面付</Typography.Title>
+      <Typography.Paragraph type="secondary">
+        填写 AppId、应用私钥（商户密钥）和支付宝公钥（商户 key）即可使用官方当面付收款。
       </Typography.Paragraph>
       {unreadable ? (
         <Alert
@@ -147,7 +264,11 @@ export default function Settings() {
           type="warning"
           showIcon
           style={{ marginBottom: 16 }}
-          message="尚未配置，店铺暂时无法收款"
+          message={
+            epayConfigured
+              ? '尚未配置当面付。已开通其他收款方式，店铺仍可收款。'
+              : '尚未配置当面付'
+          }
         />
       )}
       {feedback && (
@@ -217,6 +338,136 @@ export default function Settings() {
           loading={checking}
           disabled={busy}
           onClick={() => void checkConfig()}
+          size="large"
+        >
+          检测配置
+        </Button>
+      </Form>
+
+      <Divider />
+
+      <Typography.Title level={4}>易支付（可选）</Typography.Title>
+      <Typography.Paragraph type="secondary">
+        适用于兼容彩虹易支付 V1 接口（mapi.php）的支付网关。不开启时不影响已配置的支付宝当面付。启用后请填写支付网关、商户ID、商户密钥，并勾选要开通的渠道。用 HTTPS 域名访问店铺时，系统会自动登记异步通知地址，无需手填；HTTP 访问时将改由买家页面轮询确认支付结果。
+      </Typography.Paragraph>
+      {epayUnreadable ? (
+        <Alert
+          type="error"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="已保存的商户密钥无法读取，请重新填写并保存"
+        />
+      ) : epayConfigured ? (
+        <Alert
+          type="success"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="已启用易支付"
+          description={epayKeyMasked ? `商户密钥 ${epayKeyMasked}（留空表示不修改）` : undefined}
+        />
+      ) : epayEnabled ? (
+        <Alert
+          type="warning"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="已打开开关，但配置尚不完整，买家还不能使用该收款方式"
+        />
+      ) : (
+        <Alert
+          type="info"
+          showIcon
+          style={{ marginBottom: 16 }}
+          message="未启用。需要时打开开关并填写下列字段即可。"
+        />
+      )}
+      {epayFeedback && (
+        <Alert
+          type={epayFeedback.type}
+          showIcon
+          style={{ marginBottom: 16 }}
+          message={epayFeedback.text}
+        />
+      )}
+      <Form
+        form={epayForm}
+        layout="vertical"
+        onFinish={saveEpay}
+        initialValues={{ enabled: false, channels: [] }}
+      >
+        <Form.Item
+          name="enabled"
+          label="启用易支付收款"
+          valuePropName="checked"
+        >
+          <Switch
+            checkedChildren="已启用"
+            unCheckedChildren="未启用"
+            onChange={(v) => setEpayEnabled(v)}
+          />
+        </Form.Item>
+        <Form.Item
+          name="gateway"
+          label="支付网关"
+          extra="填写支付平台提供的网关根地址，例如 https://pay.example.com/"
+          rules={
+            epayEnabled
+              ? [{ required: true, message: '请填写支付网关' }]
+              : []
+          }
+        >
+          <Input placeholder="https://pay.example.com/" size="large" />
+        </Form.Item>
+        <Form.Item
+          name="pid"
+          label="商户ID"
+          rules={
+            epayEnabled ? [{ required: true, message: '请填写商户ID' }] : []
+          }
+        >
+          <Input placeholder="平台分配的商户 ID" size="large" />
+        </Form.Item>
+        <Form.Item
+          name="key"
+          label="商户密钥"
+          extra="密钥不会以明文回显。已保存过的密钥留空表示不修改。"
+          rules={
+            epayConfigured || !epayEnabled
+              ? []
+              : [{ required: true, message: '请填写商户密钥' }]
+          }
+        >
+          <Input.Password
+            size="large"
+            visibilityToggle={false}
+            placeholder={epayKeyMasked ? '已保存，留空则不修改' : '平台分配的商户密钥'}
+            autoComplete="new-password"
+          />
+        </Form.Item>
+        <Form.Item
+          name="channels"
+          label="开通渠道"
+          rules={
+            epayEnabled
+              ? [{ required: true, type: 'array', min: 1, message: '请至少选择一个渠道' }]
+              : []
+          }
+        >
+          <Checkbox.Group options={EPAY_CHANNEL_OPTIONS} />
+        </Form.Item>
+        <Button
+          type="primary"
+          htmlType="submit"
+          className="candy-btn"
+          loading={epayBusy}
+          size="large"
+        >
+          保存易支付配置
+        </Button>
+        <Button
+          style={{ marginLeft: 12 }}
+          loading={epayChecking}
+          disabled={epayBusy}
+          onClick={() => void checkEpay()}
           size="large"
         >
           检测配置

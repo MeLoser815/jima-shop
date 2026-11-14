@@ -12,6 +12,12 @@ import {
 import { yuanToFen, fenToYuan } from './money.js';
 import { DEFAULT_THEME_ID, isValidThemeId, normalizeThemeId, THEME_PRESETS } from './themes.js';
 import { DEFAULT_ADMIN_BASE_PATH, normalizeAdminBasePath } from './adminPath.js';
+import {
+  type EpayChannel,
+  type PaymentMethodId,
+  isPaymentMethodId,
+  normalizeEpayChannels,
+} from './paymentMethods.js';
 
 export type AlipaySettings = {
   appId: string;
@@ -21,6 +27,14 @@ export type AlipaySettings = {
   storeId: string;
   notifyUrl: string;
   sellerId: string;
+};
+
+export type EpaySettings = {
+  enabled: boolean;
+  gateway: string;
+  pid: string;
+  key: string;
+  channels: EpayChannel[];
 };
 
 export type OrderRow = {
@@ -35,6 +49,7 @@ export type OrderRow = {
   buyer_note: string | null;
   raw_notify: string | null;
   fulfillment_status: string;
+  payment_channel: string;
   created_at: string;
   updated_at: string;
 };
@@ -578,6 +593,88 @@ export function settingsConfigured(): boolean {
   return inspectAlipaySettings().configured;
 }
 
+export type EpaySettingsInspection = {
+  configured: boolean;
+  unreadable: boolean;
+  enabled: boolean;
+  settings: EpaySettings | null;
+};
+
+function parseEpayEnabled(raw: string | null): boolean {
+  return raw === '1' || raw === 'true';
+}
+
+/** 读取易支付配置；解密失败时不抛错，以便后台仍可重新保存。 */
+export function inspectEpaySettings(): EpaySettingsInspection {
+  const enabled = parseEpayEnabled(getSetting('epay_enabled'));
+  const gateway = getSetting('epay_gateway') || '';
+  const pid = getSetting('epay_pid') || '';
+  const keyEnc = getSetting('epay_key_enc');
+  const channels = normalizeEpayChannels(getSetting('epay_channels') || '[]');
+  if (!keyEnc && !gateway && !pid && !enabled) {
+    return { configured: false, unreadable: false, enabled: false, settings: null };
+  }
+  if (!keyEnc) {
+    const incomplete: EpaySettings = {
+      enabled,
+      gateway,
+      pid,
+      key: '',
+      channels,
+    };
+    return {
+      configured: false,
+      unreadable: false,
+      enabled,
+      settings: incomplete,
+    };
+  }
+  try {
+    const settings: EpaySettings = {
+      enabled,
+      gateway,
+      pid,
+      key: decrypt(keyEnc, config.encryptionKey),
+      channels,
+    };
+    const configured = Boolean(
+      enabled && gateway && pid && settings.key && channels.length,
+    );
+    return { configured, unreadable: false, enabled, settings };
+  } catch {
+    return { configured: false, unreadable: true, enabled, settings: null };
+  }
+}
+
+export function loadEpaySettings(): EpaySettings | null {
+  return inspectEpaySettings().settings;
+}
+
+export function epayConfigured(): boolean {
+  return inspectEpaySettings().configured;
+}
+
+export function paymentConfigured(): boolean {
+  return settingsConfigured() || epayConfigured();
+}
+
+export function saveEpaySettings(input: {
+  enabled: boolean;
+  gateway: string;
+  pid: string;
+  key?: string;
+  channels: EpayChannel[];
+}): void {
+  setSetting('epay_enabled', input.enabled ? '1' : '0');
+  setSetting('epay_gateway', input.gateway.trim());
+  setSetting('epay_pid', input.pid.trim());
+  const key = (input.key ?? '').trim();
+  if (key) {
+    setSetting('epay_key_enc', encrypt(key, config.encryptionKey));
+  }
+  setSetting('epay_channels', JSON.stringify(normalizeEpayChannels(input.channels)));
+}
+
 export function createOrder(input: {
   outTradeNo: string;
   subject: string;
@@ -585,11 +682,16 @@ export function createOrder(input: {
   qrCode?: string | null;
   status?: string;
   buyerNote?: string | null;
+  paymentChannel?: PaymentMethodId | string;
 }): OrderRow {
+  const channel =
+    input.paymentChannel && isPaymentMethodId(input.paymentChannel)
+      ? input.paymentChannel
+      : 'alipay_f2f';
   getDb()
     .prepare(
-      `INSERT INTO orders(out_trade_no, subject, total_amount, status, qr_code, buyer_note)
-       VALUES(?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO orders(out_trade_no, subject, total_amount, status, qr_code, buyer_note, payment_channel)
+       VALUES(?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.outTradeNo,
@@ -598,6 +700,7 @@ export function createOrder(input: {
       input.status ?? 'WAIT_BUYER_PAY',
       input.qrCode ?? null,
       input.buyerNote ?? null,
+      channel,
     );
   return getOrderByOutTradeNo(input.outTradeNo)!;
 }
@@ -654,6 +757,7 @@ export function updateOrder(
     buyer_logon_id: string;
     raw_notify: string;
     fulfillment_status: string;
+    payment_channel: string;
   }>,
 ): void {
   const fields: string[] = [];

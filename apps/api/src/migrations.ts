@@ -115,6 +115,22 @@ const MIGRATIONS: Migration[] = [
       `);
     },
   },
+  {
+    id: 5,
+    name: 'epay_and_payment_channel',
+    up(db) {
+      ensureColumn(
+        db,
+        'orders',
+        'payment_channel',
+        "TEXT NOT NULL DEFAULT 'alipay_f2f'",
+      );
+      db.exec(
+        `UPDATE orders SET payment_channel = 'alipay_f2f'
+         WHERE payment_channel IS NULL OR payment_channel = ''`,
+      );
+    },
+  },
 ];
 
 export function runMigrations(db: Database.Database): void {

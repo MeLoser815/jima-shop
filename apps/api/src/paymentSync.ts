@@ -1,6 +1,7 @@
 import {
   getOrderByOutTradeNo,
   loadAlipaySettings,
+  loadEpaySettings,
   updateOrder,
   type OrderRow,
 } from './db.js';
@@ -9,20 +10,30 @@ import {
   markOrderPaidAndDeliverKeys,
   releaseReservationsForOrder,
 } from './cardKeys.js';
+import { isEpayPaymentChannel } from './paymentMethods.js';
 import {
   matchNotifyToOrder,
   matchQueryToOrder,
+  matchEpayNotifyToOrder,
+  matchEpayQueryToOrder,
   type PaymentIdentity,
+  type EpayPaymentIdentity,
 } from './paymentMatch.js';
 
 export type ApplyTradeResult =
   | { ok: true; order: OrderRow }
   | { ok: false; reason: string; orderMissing?: boolean };
 
-function configuredIdentity(): { appId: string; sellerId?: string } | null {
+function configuredAlipayIdentity(): { appId: string; sellerId?: string } | null {
   const s = loadAlipaySettings();
   if (!s) return null;
   return { appId: s.appId, sellerId: s.sellerId || undefined };
+}
+
+function configuredEpayIdentity(): { pid: string } | null {
+  const s = loadEpaySettings();
+  if (!s || !s.enabled || !s.pid || !s.key) return null;
+  return { pid: s.pid };
 }
 
 export function applyVerifiedTrade(input: {
@@ -30,30 +41,50 @@ export function applyVerifiedTrade(input: {
   tradeStatus?: string;
   tradeNo?: string;
   buyerLogonId?: string;
-  identity: PaymentIdentity;
+  identity: PaymentIdentity | EpayPaymentIdentity;
   rawNotify?: string;
   source: 'notify' | 'query';
+  provider?: 'alipay' | 'epay';
 }): ApplyTradeResult {
   const order = getOrderByOutTradeNo(input.outTradeNo);
   if (!order) {
     return { ok: false, reason: 'order_missing', orderMissing: true };
   }
 
-  const configured = configuredIdentity();
-  if (!configured) {
-    return { ok: false, reason: 'alipay_unconfigured' };
-  }
+  const provider =
+    input.provider ??
+    (isEpayPaymentChannel(order.payment_channel) ? 'epay' : 'alipay');
 
   const status = input.tradeStatus || '';
   const paid = isPaidStatus(status);
 
   if (paid) {
-    const match =
-      input.source === 'notify'
-        ? matchNotifyToOrder(order, input.identity, configured)
-        : matchQueryToOrder(order, input.identity, configured);
-    if (!match.ok) {
-      return { ok: false, reason: match.reason };
+    if (provider === 'epay') {
+      const configured = configuredEpayIdentity();
+      if (!configured) {
+        return { ok: false, reason: 'epay_unconfigured' };
+      }
+      const identity = input.identity as EpayPaymentIdentity;
+      const match =
+        input.source === 'notify'
+          ? matchEpayNotifyToOrder(order, identity, configured)
+          : matchEpayQueryToOrder(order, identity, configured);
+      if (!match.ok) {
+        return { ok: false, reason: match.reason };
+      }
+    } else {
+      const configured = configuredAlipayIdentity();
+      if (!configured) {
+        return { ok: false, reason: 'alipay_unconfigured' };
+      }
+      const identity = input.identity as PaymentIdentity;
+      const match =
+        input.source === 'notify'
+          ? matchNotifyToOrder(order, identity, configured)
+          : matchQueryToOrder(order, identity, configured);
+      if (!match.ok) {
+        return { ok: false, reason: match.reason };
+      }
     }
     markOrderPaidAndDeliverKeys(input.outTradeNo, {
       status,
@@ -77,7 +108,7 @@ export function applyVerifiedTrade(input: {
   return { ok: true, order: updated! };
 }
 
-const lastAlipayQueryAt = new Map<string, number>();
+const lastTradeQueryAt = new Map<string, number>();
 export const PUBLIC_TRADE_QUERY_INTERVAL_MS = 8_000;
 
 export function allowAlipayQuery(
@@ -85,13 +116,21 @@ export function allowAlipayQuery(
   intervalMs = PUBLIC_TRADE_QUERY_INTERVAL_MS,
   now = Date.now(),
 ): boolean {
-  const prev = lastAlipayQueryAt.get(outTradeNo) ?? 0;
+  return allowPublicTradeQuery(outTradeNo, intervalMs, now);
+}
+
+export function allowPublicTradeQuery(
+  outTradeNo: string,
+  intervalMs = PUBLIC_TRADE_QUERY_INTERVAL_MS,
+  now = Date.now(),
+): boolean {
+  const prev = lastTradeQueryAt.get(outTradeNo) ?? 0;
   if (now - prev < intervalMs) return false;
-  lastAlipayQueryAt.set(outTradeNo, now);
+  lastTradeQueryAt.set(outTradeNo, now);
   return true;
 }
 
 /** 仅用于测试：清空查单节流状态。 */
 export function resetAlipayQueryThrottleForTests(): void {
-  lastAlipayQueryAt.clear();
+  lastTradeQueryAt.clear();
 }

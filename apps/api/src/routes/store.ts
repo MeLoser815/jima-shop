@@ -9,11 +9,27 @@ import {
   tradeQuery,
 } from '../alipay.js';
 import {
+  EpayConfigError,
+  buyerReturnUrl,
+  epayCreate,
+  epayCreateFailureMessage,
+  epayQuery,
+  qrOrPayContent,
+  requestOrigin,
+} from '../epay.js';
+import { config } from '../config.js';
+import {
   INSECURE_HTTP_PAY_HINT,
   notifyUrlFromRequest,
   requestAccessFromRequest,
 } from '../security.js';
-import { getOrderByOutTradeNo, settingsConfigured, updateOrder } from '../db.js';
+import {
+  epayConfigured,
+  getOrderByOutTradeNo,
+  loadEpaySettings,
+  settingsConfigured,
+  updateOrder,
+} from '../db.js';
 import {
   createReservedCheckoutOrder,
   getPublicOrderView,
@@ -21,7 +37,15 @@ import {
   releaseReservationsForOrder,
   StockError,
 } from '../cardKeys.js';
-import { applyVerifiedTrade, allowAlipayQuery } from '../paymentSync.js';
+import { applyVerifiedTrade, allowPublicTradeQuery } from '../paymentSync.js';
+import {
+  epayTypeFromMethod,
+  isEpayPaymentChannel,
+  isPaymentMethodId,
+  listAvailablePaymentMethods,
+  paymentChannelLabel,
+  type PaymentMethodId,
+} from '../paymentMethods.js';
 
 const nano = customAlphabet('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', 12);
 
@@ -32,12 +56,36 @@ function genOutTradeNo(): string {
   return `JM${stamp}${nano()}`;
 }
 
-async function maybeRefreshFromAlipay(outTradeNo: string): Promise<void> {
+function availableMethods() {
+  return listAvailablePaymentMethods({
+    alipayConfigured: settingsConfigured(),
+    epayConfigured: epayConfigured(),
+    epayChannels: loadEpaySettings()?.channels ?? [],
+  });
+}
+
+async function maybeRefreshFromProvider(outTradeNo: string): Promise<void> {
   const order = getOrderByOutTradeNo(outTradeNo);
   if (!order || isPaidStatus(order.status)) return;
   if (order.status === 'TRADE_CLOSED' || order.status === 'FAILED') return;
-  if (!allowAlipayQuery(outTradeNo)) return;
+  if (!allowPublicTradeQuery(outTradeNo)) return;
   try {
+    if (isEpayPaymentChannel(order.payment_channel)) {
+      const result = await epayQuery(outTradeNo);
+      if (!result.ok || !result.tradeStatus) return;
+      applyVerifiedTrade({
+        outTradeNo,
+        tradeStatus: result.tradeStatus,
+        tradeNo: result.tradeNo,
+        identity: {
+          totalAmount: result.money,
+          pid: result.pid,
+        },
+        source: 'query',
+        provider: 'epay',
+      });
+      return;
+    }
     const result = await tradeQuery(outTradeNo);
     if (!result.ok || !result.tradeStatus) return;
     applyVerifiedTrade({
@@ -51,6 +99,7 @@ async function maybeRefreshFromAlipay(outTradeNo: string): Promise<void> {
         sellerId: result.sellerId,
       },
       source: 'query',
+      provider: 'alipay',
     });
   } catch {
     // 配置缺失或网络错误时，仍返回本地公开视图
@@ -58,20 +107,23 @@ async function maybeRefreshFromAlipay(outTradeNo: string): Promise<void> {
 }
 
 export async function storeRoutes(app: FastifyInstance): Promise<void> {
-  /** 前台公开：是否已配置支付宝，不返回任何密钥。 */
+  /** 前台公开：当前可用的买家支付方式，不返回密钥、商户号或网关。 */
   app.get('/api/store/payment', async (req) => {
     const access = requestAccessFromRequest(req);
+    const methods = availableMethods();
     return {
       ok: true,
       alipayConfigured: settingsConfigured(),
-      notifyEnabled: Boolean(access.notifyUrl),
+      epayConfigured: epayConfigured(),
+      methods,
+      notifyEnabled: Boolean(access.notifyUrl || access.epayNotifyUrl),
       insecureHttp: access.insecureHttp,
       hint: access.insecureHttp ? INSECURE_HTTP_PAY_HINT : undefined,
     };
   });
 
   /**
-   * 购物车结账：先写本地订单并预占卡密，再向支付宝预下单。
+   * 购物车结账：先写本地订单并预占卡密，再按所选方式向支付宝或易支付下单。
    */
   app.post(
     '/api/checkout',
@@ -91,6 +143,7 @@ export async function storeRoutes(app: FastifyInstance): Promise<void> {
             .min(1)
             .max(50),
           buyerNote: z.string().max(200).optional(),
+          paymentMethod: z.string().max(32).optional(),
         })
         .safeParse(req.body);
 
@@ -101,18 +154,104 @@ export async function storeRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
+      const methods = availableMethods();
+      if (!methods.length) {
+        return reply.code(400).send({
+          ok: false,
+          error: '支付暂不可用，请稍后再试或联系商家',
+        });
+      }
+
+      let methodId: PaymentMethodId;
+      const requested = (parsed.data.paymentMethod || '').trim();
+      if (requested) {
+        if (!isPaymentMethodId(requested) || !methods.some((m) => m.id === requested)) {
+          return reply.code(400).send({
+            ok: false,
+            error: '该支付方式暂不可用，请选择其他方式或联系商家',
+          });
+        }
+        methodId = requested;
+      } else if (methods.length === 1) {
+        methodId = methods[0].id;
+      } else {
+        return reply.code(400).send({ ok: false, error: '请选择支付方式' });
+      }
+
       const outTradeNo = genOutTradeNo();
       let orderId: number | null = null;
+      const access = requestAccessFromRequest(req);
+      const payLabel = paymentChannelLabel(methodId);
 
       try {
         const reserved = createReservedCheckoutOrder({
           outTradeNo,
           buyerNote: parsed.data.buyerNote?.trim() || null,
+          paymentChannel: methodId,
           items: parsed.data.items,
         });
         orderId = reserved.order.id;
         const lines = reserved.lines;
         const subject = reserved.subject;
+
+        const epayType = epayTypeFromMethod(methodId);
+        if (epayType) {
+          const origin = requestOrigin({
+            protocol: req.protocol,
+            hostname: req.hostname,
+            headers: req.headers as Record<string, unknown>,
+            fallbackOrigin: config.webOrigin,
+          });
+          const result = await epayCreate({
+            type: epayType,
+            outTradeNo,
+            name: subject,
+            money: reserved.totalAmount,
+            clientIp: req.ip,
+            device: 'pc',
+            notifyUrl: access.epayNotifyUrl,
+            returnUrl: buyerReturnUrl(origin, outTradeNo),
+            audience: 'buyer',
+          });
+          const qrCode = result.ok ? qrOrPayContent(result) : undefined;
+          if (!result.ok || !qrCode) {
+            updateOrder(outTradeNo, { status: 'FAILED' });
+            releaseReservationsForOrder(orderId);
+            return reply.code(400).send({
+              ok: false,
+              error: result.ok
+                ? '未能生成收款码，请稍后重试或联系商家'
+                : epayCreateFailureMessage(result, {
+                    insecureHttp: access.insecureHttp,
+                  }),
+            });
+          }
+          updateOrder(outTradeNo, {
+            qr_code: qrCode,
+            trade_no: result.tradeNo,
+          });
+          const order = getOrderByOutTradeNo(outTradeNo)!;
+          return {
+            ok: true,
+            order: {
+              outTradeNo: order.out_trade_no,
+              subject: order.subject,
+              totalAmount: order.total_amount,
+              status: order.status,
+              qrCode: order.qr_code,
+              payUrl: result.payUrl || undefined,
+              payScheme: result.urlScheme || undefined,
+              payMethod: payLabel,
+              items: lines.map((l) => ({
+                productId: l.productId,
+                name: l.productName,
+                coverUrl: l.coverUrl,
+                unitPrice: l.unitPrice,
+                quantity: l.quantity,
+              })),
+            },
+          };
+        }
 
         const result = await tradePrecreate({
           outTradeNo,
@@ -132,7 +271,7 @@ export async function storeRoutes(app: FastifyInstance): Promise<void> {
             error: result.ok
               ? '未能生成收款码，请稍后重试或联系商家'
               : precreateFailureMessage(result, {
-                  insecureHttp: requestAccessFromRequest(req).insecureHttp,
+                  insecureHttp: access.insecureHttp,
                 }),
             code: result.code,
             subCode: result.subCode,
@@ -150,6 +289,7 @@ export async function storeRoutes(app: FastifyInstance): Promise<void> {
             totalAmount: order.total_amount,
             status: order.status,
             qrCode: order.qr_code,
+            payMethod: payLabel,
             items: lines.map((l) => ({
               productId: l.productId,
               name: l.productName,
@@ -171,7 +311,7 @@ export async function storeRoutes(app: FastifyInstance): Promise<void> {
         if (err instanceof StockError) {
           return reply.code(400).send({ ok: false, error: err.message });
         }
-        if (err instanceof AlipayConfigError) {
+        if (err instanceof AlipayConfigError || err instanceof EpayConfigError) {
           return reply.code(400).send({ ok: false, error: err.message });
         }
         throw err;
@@ -179,7 +319,7 @@ export async function storeRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
-  /** 买家查单：仅返回公开视图；必要时在服务端限频向支付宝同步。 */
+  /** 买家查单：仅返回公开视图；必要时在服务端限频向支付渠道同步。 */
   app.get(
     '/api/orders/query/:outTradeNo',
     {
@@ -191,7 +331,7 @@ export async function storeRoutes(app: FastifyInstance): Promise<void> {
       if (!no) {
         return reply.code(400).send({ ok: false, error: '缺少商户单号' });
       }
-      await maybeRefreshFromAlipay(no);
+      await maybeRefreshFromProvider(no);
       const order = getPublicOrderView(no);
       if (!order) {
         return reply.code(404).send({ ok: false, error: '订单不存在' });

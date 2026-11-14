@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { customAlphabet } from 'nanoid';
 import { z } from 'zod';
 import {
@@ -10,12 +10,27 @@ import {
   tradePrecreate,
   tradeQuery,
 } from '../alipay.js';
+import {
+  EpayConfigError,
+  collectEpayParams,
+  epayQuery,
+  verifyEpaySign,
+} from '../epay.js';
 import { notifyUrlFromRequest } from '../security.js';
-import { createOrder, getOrderByOutTradeNo, updateOrder } from '../db.js';
+import {
+  createOrder,
+  getOrderByOutTradeNo,
+  loadEpaySettings,
+  updateOrder,
+} from '../db.js';
 import { getPublicOrderView } from '../cardKeys.js';
 import { requireAdmin } from '../middleware/auth.js';
-import { paymentIdentityFromNotify } from '../paymentMatch.js';
+import {
+  epayIdentityFromNotify,
+  paymentIdentityFromNotify,
+} from '../paymentMatch.js';
 import { applyVerifiedTrade } from '../paymentSync.js';
+import { isEpayPaymentChannel } from '../paymentMethods.js';
 
 const nano = customAlphabet('0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ', 16);
 
@@ -60,6 +75,7 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
           subject: parsed.data.subject,
           totalAmount: parsed.data.amount,
           status: 'WAIT_BUYER_PAY',
+          paymentChannel: 'alipay_f2f',
         });
 
         const result = await tradePrecreate({
@@ -134,6 +150,7 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
           subject: parsed.data.subject,
           totalAmount: parsed.data.amount,
           status: 'PAYING',
+          paymentChannel: 'alipay_f2f',
         });
 
         const result = await tradePay({
@@ -245,6 +262,49 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(400).send({ ok: false, error: '缺少 outTradeNo' });
       }
       try {
+        const local = getOrderByOutTradeNo(parsed.data.outTradeNo);
+        const useEpay = isEpayPaymentChannel(local?.payment_channel);
+        if (useEpay) {
+          const result = await epayQuery(parsed.data.outTradeNo);
+          if (!result.ok) {
+            return reply.code(400).send({
+              ok: false,
+              error: result.msg || '查单失败',
+            });
+          }
+          const applied = applyVerifiedTrade({
+            outTradeNo: parsed.data.outTradeNo,
+            tradeStatus: result.tradeStatus,
+            tradeNo: result.tradeNo,
+            identity: {
+              totalAmount: result.money,
+              pid: result.pid,
+            },
+            source: 'query',
+            provider: 'epay',
+          });
+          if (!applied.ok) {
+            app.log.warn(
+              {
+                outTradeNo: parsed.data.outTradeNo,
+                tradeStatus: result.tradeStatus,
+                reason: applied.reason,
+              },
+              '查单结果与本地订单不一致',
+            );
+            return reply.code(400).send({
+              ok: false,
+              error: '查单结果与本地订单不一致，未更新发卡状态',
+            });
+          }
+          return {
+            ok: true,
+            tradeStatus: result.tradeStatus,
+            tradeNo: result.tradeNo,
+            order: getPublicOrderView(parsed.data.outTradeNo),
+          };
+        }
+
         const result = await tradeQuery(parsed.data.outTradeNo);
         if (!result.ok) {
           return reply.code(400).send({
@@ -266,6 +326,7 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
             sellerId: result.sellerId,
           },
           source: 'query',
+          provider: 'alipay',
         });
         if (!applied.ok) {
           app.log.warn(
@@ -289,7 +350,7 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
           order: getPublicOrderView(parsed.data.outTradeNo),
         };
       } catch (err) {
-        if (err instanceof AlipayConfigError) {
+        if (err instanceof AlipayConfigError || err instanceof EpayConfigError) {
           return reply.code(400).send({ ok: false, error: err.message });
         }
         throw err;
@@ -353,4 +414,56 @@ export async function paymentRoutes(app: FastifyInstance): Promise<void> {
     app.log.info({ outTradeNo, tradeStatus, outcome: 'applied' }, '支付宝通知已处理');
     return reply.type('text/plain').send('success');
   });
+
+  /**
+   * 易支付异步通知（GET / POST）。
+   * 验签通过且 trade_status=TRADE_SUCCESS 后履约发卡，必须返回纯文本 success / fail。
+   */
+  const handleEpayNotify = async (req: FastifyRequest, reply: FastifyReply) => {
+    const params = collectEpayParams({
+      ...(req.query as Record<string, unknown> | undefined),
+      ...(req.body as Record<string, unknown> | undefined),
+    });
+    const outTradeNo = params.out_trade_no;
+    const tradeStatus = params.trade_status;
+    const settings = loadEpaySettings();
+    if (!settings?.key) {
+      app.log.warn({ outTradeNo }, '易支付通知时尚未配置密钥');
+      return reply.code(400).type('text/plain').send('fail');
+    }
+    if (!verifyEpaySign(params, settings.key)) {
+      app.log.warn({ outTradeNo, tradeStatus }, '易支付通知验签失败');
+      return reply.code(400).type('text/plain').send('fail');
+    }
+    if (!outTradeNo) {
+      app.log.warn({ tradeStatus }, '易支付通知缺少 out_trade_no');
+      return reply.code(400).type('text/plain').send('fail');
+    }
+    if (tradeStatus !== 'TRADE_SUCCESS' && tradeStatus !== 'TRADE_FINISHED') {
+      return reply.type('text/plain').send('success');
+    }
+    const applied = applyVerifiedTrade({
+      outTradeNo,
+      tradeStatus,
+      tradeNo: params.trade_no,
+      identity: epayIdentityFromNotify(params),
+      rawNotify: JSON.stringify(params),
+      source: 'notify',
+      provider: 'epay',
+    });
+    if (!applied.ok) {
+      app.log.warn(
+        { outTradeNo, tradeStatus, reason: applied.reason },
+        applied.orderMissing
+          ? '易支付通知对应订单不存在'
+          : '易支付通知与本地订单核对失败',
+      );
+      return reply.type('text/plain').send('fail');
+    }
+    app.log.info({ outTradeNo, tradeStatus, outcome: 'applied' }, '易支付通知已处理');
+    return reply.type('text/plain').send('success');
+  };
+
+  app.get('/api/payment/epay/notify', handleEpayNotify);
+  app.post('/api/payment/epay/notify', handleEpayNotify);
 }

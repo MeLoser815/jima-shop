@@ -89,7 +89,7 @@ function menuItems() {
     {
       key: adminPath('settings'),
       icon: <WalletOutlined />,
-      label: <Link to={adminPath('settings')}>支付宝收款</Link>,
+      label: <Link to={adminPath('settings')}>收款配置</Link>,
     },
     {
       key: adminPath('account'),

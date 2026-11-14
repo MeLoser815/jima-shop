@@ -95,3 +95,59 @@ export function paymentIdentityFromNotify(
     sellerId: params.seller_id,
   };
 }
+
+export type EpayPaymentIdentity = {
+  totalAmount?: string;
+  pid?: string;
+};
+
+export type ConfiguredEpay = {
+  pid: string;
+};
+
+function comparePid(
+  configured: string,
+  paymentPid: string | undefined,
+  required: boolean,
+): PaymentMatchResult | null {
+  if (paymentPid == null || paymentPid === '') {
+    return required ? { ok: false, reason: 'pid_missing' } : null;
+  }
+  if (String(paymentPid) !== String(configured)) {
+    return { ok: false, reason: 'pid_mismatch' };
+  }
+  return null;
+}
+
+/** 易支付异步通知：金额与商户 ID 必须出现且一致。 */
+export function matchEpayNotifyToOrder(
+  order: { total_amount: string },
+  payment: EpayPaymentIdentity,
+  configured: ConfiguredEpay,
+): PaymentMatchResult {
+  return (
+    compareAmount(order.total_amount, payment.totalAmount, true) ||
+    comparePid(configured.pid, payment.pid, true) || { ok: true }
+  );
+}
+
+/** 易支付查单：金额必须一致；pid 仅在返回中出现时核对。 */
+export function matchEpayQueryToOrder(
+  order: { total_amount: string },
+  payment: EpayPaymentIdentity,
+  configured: ConfiguredEpay,
+): PaymentMatchResult {
+  return (
+    compareAmount(order.total_amount, payment.totalAmount, true) ||
+    comparePid(configured.pid, payment.pid, false) || { ok: true }
+  );
+}
+
+export function epayIdentityFromNotify(
+  params: Record<string, string>,
+): EpayPaymentIdentity {
+  return {
+    totalAmount: params.money || params.total_amount,
+    pid: params.pid,
+  };
+}

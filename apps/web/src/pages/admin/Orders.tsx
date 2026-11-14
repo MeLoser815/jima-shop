@@ -4,6 +4,13 @@ import type { TableProps } from 'antd';
 import { useSearchParams } from 'react-router-dom';
 import { api, type DeliveredKey } from '../../api';
 
+function paymentMethodLabel(channel?: string | null): string {
+  if (channel === 'epay_wxpay') return '微信';
+  if (channel === 'epay_qqpay') return 'QQ钱包';
+  if (channel === 'epay_alipay' || channel === 'alipay_f2f' || !channel) return '支付宝';
+  return '支付宝';
+}
+
 type Row = {
   id: number;
   out_trade_no: string;
@@ -12,6 +19,7 @@ type Row = {
   status: string;
   created_at: string;
   trade_no: string | null;
+  payment_channel?: string | null;
   buyer_note: string | null;
   fulfillment_status?: string;
   items: Array<{
@@ -175,6 +183,12 @@ export default function Orders() {
         render: (v: string) => <span className="price">¥{v}</span>,
       },
       {
+        title: '支付方式',
+        dataIndex: 'payment_channel',
+        width: 110,
+        render: (v: string | null | undefined) => paymentMethodLabel(v),
+      },
+      {
         title: '支付状态',
         dataIndex: 'status',
         width: 120,
@@ -189,7 +203,7 @@ export default function Orders() {
         render: fulfillmentTag,
       },
       {
-        title: '支付宝单号',
+        title: '支付单号',
         dataIndex: 'trade_no',
         width: 180,
         render: (v: string | null) => v || '—',
@@ -237,7 +251,7 @@ export default function Orders() {
       <Space wrap style={{ marginBottom: 16 }}>
         <Input.Search
           allowClear
-          placeholder="搜索商户单号、支付宝单号或标题"
+          placeholder="搜索商户单号、支付单号或标题"
           style={{ width: 280 }}
           value={keyword}
           onChange={(e) => setKeyword(e.target.value)}
@@ -282,7 +296,7 @@ export default function Orders() {
         loading={loading}
         dataSource={rows}
         columns={columns}
-        scroll={{ x: 1200 }}
+        scroll={{ x: 1300 }}
         locale={{ emptyText: hasFilters ? '没有符合条件的订单' : '暂无订单' }}
         onChange={(_pag, _filters, sorter) => {
           const s = Array.isArray(sorter) ? sorter[0] : sorter;

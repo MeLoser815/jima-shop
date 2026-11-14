@@ -87,6 +87,7 @@ export type PublicOrder = {
     coverUrl: string;
   }>;
   message?: string;
+  payMethod?: string;
 };
 
 export type ThemePreset = {
@@ -250,6 +251,8 @@ export const api = {
     return request<{
       ok: boolean;
       alipayConfigured: boolean;
+      epayConfigured?: boolean;
+      methods?: Array<{ id: string; label: string }>;
       notifyEnabled?: boolean;
       insecureHttp?: boolean;
       hint?: string;
@@ -260,6 +263,7 @@ export const api = {
       ok: boolean;
       configured: boolean;
       unreadable?: boolean;
+      paymentConfigured?: boolean;
       settings: {
         appId: string;
         privateKeyMasked: string;
@@ -268,6 +272,17 @@ export const api = {
         storeId: string;
         sellerId: string;
         notifyUrl: string;
+      };
+      epay?: {
+        enabled: boolean;
+        configured: boolean;
+        unreadable: boolean;
+        settings: {
+          gateway: string;
+          pid: string;
+          keyMasked: string;
+          channels: string[];
+        };
       };
     }>('/api/admin/settings', { auth: true });
   },
@@ -297,10 +312,36 @@ export const api = {
       { method: 'POST', auth: true },
     );
   },
+  saveEpaySettings(body: {
+    enabled: boolean;
+    gateway: string;
+    pid: string;
+    key?: string;
+    channels: string[];
+  }) {
+    return request<{
+      ok: boolean;
+      configured?: boolean;
+      valid?: boolean;
+      warning?: string;
+    }>('/api/admin/settings/epay', {
+      method: 'PUT',
+      auth: true,
+      body: JSON.stringify(body),
+    });
+  },
+  checkEpaySettings() {
+    return request<{ ok: boolean; message?: string }>(
+      '/api/admin/settings/epay/check',
+      { method: 'POST', auth: true },
+    );
+  },
   dashboard() {
     return request<{
       ok: boolean;
       configured: boolean;
+      alipayConfigured?: boolean;
+      epayConfigured?: boolean;
       stats: {
         productCount: number;
         onSaleCount: number;
@@ -501,6 +542,7 @@ export const api = {
   checkout(body: {
     items: Array<{ productId: number; quantity: number }>;
     buyerNote?: string;
+    paymentMethod?: string;
   }) {
     return request<{
       ok: boolean;
@@ -510,6 +552,9 @@ export const api = {
         totalAmount: string;
         status: string;
         qrCode: string | null;
+        payUrl?: string;
+        payScheme?: string;
+        payMethod?: string;
         items: Array<{
           productId: number;
           name: string;

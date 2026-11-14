@@ -32,6 +32,8 @@ const adminBasePath = normalizeAdminBasePath(
   process.env.ADMIN_BASE_PATH || process.env.VITE_ADMIN_BASE_PATH,
 );
 
+const apiPort = Number(process.env.PORT || 8001);
+
 export default defineConfig({
   plugins: [react()],
   define: {
@@ -43,7 +45,7 @@ export default defineConfig({
     strictPort: true,
     proxy: {
       '/api': {
-        target: 'http://127.0.0.1:8001',
+        target: `http://127.0.0.1:${apiPort}`,
         changeOrigin: true,
       },
     },

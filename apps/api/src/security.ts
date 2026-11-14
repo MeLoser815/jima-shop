@@ -15,50 +15,118 @@ export function isInsecureSecret(value: string | undefined): boolean {
   return PLACEHOLDER_SECRETS.has(value.trim());
 }
 
-export function isPublicHttpsUrl(url: string | undefined): boolean {
+/** 拒绝内网、本机、链路本地和云元数据地址，防止 SSRF。 */
+export function isBlockedSsrfHost(host: string | undefined): boolean {
+  if (!host) return true;
+  const h = host.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (!h) return true;
+  if (
+    h === 'localhost' ||
+    h === '::1' ||
+    h === '0.0.0.0' ||
+    h === '::' ||
+    h === 'metadata' ||
+    h === 'metadata.google.internal' ||
+    h.endsWith('.local') ||
+    h.endsWith('.localhost') ||
+    h.endsWith('.internal')
+  ) {
+    return true;
+  }
+  if (h.includes('%')) return true; // IPv6 zone id
+  // IPv4-mapped IPv6, e.g. ::ffff:10.0.0.1
+  const mapped = h.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
+  if (mapped) return isBlockedSsrfHost(mapped[1]);
+  if (isBlockedIpv4(h) || isBlockedIpv6(h)) return true;
+  return false;
+}
+
+function isBlockedIpv4(host: string): boolean {
+  const m = host.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return false;
+  const oct = m.slice(1).map((s) => Number(s));
+  if (oct.some((n) => n > 255)) return true;
+  const [a, b] = oct;
+  if (a === 0 || a === 10 || a === 127) return true;
+  if (a === 169 && b === 254) return true;
+  if (a === 192 && b === 168) return true;
+  if (a === 172 && b >= 16 && b <= 31) return true;
+  if (a === 100 && b >= 64 && b <= 127) return true; // CGNAT
+  if (a >= 224) return true; // multicast / reserved
+  return false;
+}
+
+function isBlockedIpv6(host: string): boolean {
+  if (!host.includes(':')) return false;
+  const compact = host.replace(/\s/g, '');
+  if (compact === '::1' || compact === '::') return true;
+  // unique local fc00::/7, link-local fe80::/10
+  const first = expandIpv6FirstHextet(compact);
+  if (first == null) return true;
+  if ((first & 0xfe00) === 0xfc00) return true;
+  if ((first & 0xffc0) === 0xfe80) return true;
+  if (first === 0) return true; // ::, ::1, and other ::/8
+  return false;
+}
+
+function expandIpv6FirstHextet(host: string): number | null {
+  if (host.startsWith('::')) return 0;
+  const first = host.split(':')[0];
+  if (!/^[0-9a-f]{1,4}$/i.test(first)) return null;
+  return Number.parseInt(first, 16);
+}
+
+/** 公网 http(s) URL。禁止 file / 内网 / localhost / 元数据地址。 */
+export function isPublicHttpUrl(
+  url: string | undefined,
+  opts?: { httpsOnly?: boolean },
+): boolean {
   if (!url) return false;
   try {
     const u = new URL(url);
-    if (u.protocol !== 'https:') return false;
-    const host = u.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-    if (
-      host === 'localhost' ||
-      host === '127.0.0.1' ||
-      host === '::1' ||
-      host === '0.0.0.0' ||
-      host.endsWith('.local') ||
-      host.endsWith('.localhost')
-    ) {
+    if (opts?.httpsOnly) {
+      if (u.protocol !== 'https:') return false;
+    } else if (u.protocol !== 'https:' && u.protocol !== 'http:') {
       return false;
     }
-    if (/^10\.\d+\.\d+\.\d+$/.test(host)) return false;
-    if (/^192\.168\.\d+\.\d+$/.test(host)) return false;
-    if (/^172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+$/.test(host)) return false;
-    if (/^169\.254\.\d+\.\d+$/.test(host)) return false;
-    return true;
+    return !isBlockedSsrfHost(u.hostname);
   } catch {
     return false;
   }
 }
 
-/** 根据当前访问地址生成支付宝异步通知 URL。仅在公网 HTTPS 时返回。 */
+export function isPublicHttpsUrl(url: string | undefined): boolean {
+  return isPublicHttpUrl(url, { httpsOnly: true });
+}
+
+/** 根据当前访问地址生成异步通知 URL。仅在公网 HTTPS 时返回。 */
 export function buildAutoNotifyUrl(
   protocol: string,
   hostHeader: string | undefined,
+  pathname = '/api/payment/notify',
 ): string | undefined {
   const host = (hostHeader ?? '').trim().split('/')[0].split(',')[0].trim();
   if (!host) return undefined;
   const proto = protocol.toLowerCase().replace(/:$/, '').split(',')[0].trim();
   if (proto !== 'https') return undefined;
-  const url = `https://${host}/api/payment/notify`;
+  const path = pathname.startsWith('/') ? pathname : `/${pathname}`;
+  const url = `https://${host}${path}`;
   return isPublicHttpsUrl(url) ? url : undefined;
+}
+
+export function buildAutoEpayNotifyUrl(
+  protocol: string,
+  hostHeader: string | undefined,
+): string | undefined {
+  return buildAutoNotifyUrl(protocol, hostHeader, '/api/payment/epay/notify');
 }
 
 export type RequestAccess = {
   protocol: string;
   host: string;
   notifyUrl?: string;
-  /** 公网 HTTP（非 localhost）访问，无法自动登记支付宝回调 */
+  epayNotifyUrl?: string;
+  /** 公网 HTTP（非 localhost）访问，无法自动登记异步回调 */
   insecureHttp: boolean;
 };
 
@@ -122,6 +190,7 @@ export function requestAccessFromRequest(req: {
     protocol: proto,
     host,
     notifyUrl: buildAutoNotifyUrl(proto, host),
+    epayNotifyUrl: buildAutoEpayNotifyUrl(proto, host),
     insecureHttp: isInsecurePublicHttp(proto, host),
   };
 }

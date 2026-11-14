@@ -16,9 +16,14 @@ import {
   getAdminByUsername,
   getDashboardStats,
   inspectAlipaySettings,
+  inspectEpaySettings,
   loadAlipaySettings,
+  loadEpaySettings,
+  paymentConfigured,
   saveAlipaySettings,
+  saveEpaySettings,
   settingsConfigured,
+  epayConfigured,
   needsAdminSetup,
   normalizeAdminListPage,
   normalizeAdminListPageSize,
@@ -37,8 +42,10 @@ import {
 import { attachKeysToOrders, fulfillPendingOrder } from '../cardKeys.js';
 import { issueAdminAuth, requireAdmin } from '../middleware/auth.js';
 import { validateAlipayConfig } from '../alipay.js';
+import { normalizeEpayGateway, validateEpayConfig, isSafeEpayGatewayUrl } from '../epay.js';
 import { maskSecret } from '../utils/crypto.js';
 import { isPublicHttpsUrl } from '../security.js';
+import { normalizeEpayChannels } from '../paymentMethods.js';
 
 const settingsSchema = z.object({
   appId: z.string().min(1, 'AppId 不能为空'),
@@ -48,6 +55,14 @@ const settingsSchema = z.object({
   storeId: z.string().optional(),
   sellerId: z.string().optional(),
   notifyUrl: z.string().url().optional().or(z.literal('')),
+});
+
+const epaySettingsSchema = z.object({
+  enabled: z.boolean(),
+  gateway: z.string().max(512).optional().default(''),
+  pid: z.string().max(64).optional().default(''),
+  key: z.string().max(128).optional().default(''),
+  channels: z.array(z.string()).optional().default([]),
 });
 
 const usernameSchema = z
@@ -276,11 +291,25 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     async () => {
       const info = inspectAlipaySettings();
       const s = info.settings;
+      const epayInfo = inspectEpaySettings();
+      const epaySettings = epayInfo.settings;
+      const epay = {
+        enabled: epayInfo.enabled,
+        configured: epayInfo.configured,
+        unreadable: epayInfo.unreadable,
+        settings: {
+          gateway: epaySettings?.gateway || '',
+          pid: epaySettings?.pid || '',
+          keyMasked: epaySettings?.key ? maskSecret(epaySettings.key) : '',
+          channels: epaySettings?.channels ?? [],
+        },
+      };
       if (!s) {
         return {
           ok: true,
           configured: false,
           unreadable: info.unreadable,
+          paymentConfigured: paymentConfigured(),
           settings: {
             appId: info.appId,
             privateKeyMasked: '',
@@ -290,12 +319,14 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
             sellerId: '',
             notifyUrl: config.notifyUrl,
           },
+          epay,
         };
       }
       return {
         ok: true,
         configured: true,
         unreadable: false,
+        paymentConfigured: paymentConfigured(),
         settings: {
           appId: s.appId,
           privateKeyMasked: maskSecret(s.privateKey),
@@ -305,6 +336,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           sellerId: s.sellerId,
           notifyUrl: s.notifyUrl,
         },
+        epay,
       };
     },
   );
@@ -392,12 +424,98 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  app.put(
+    '/api/admin/settings/epay',
+    { preHandler: requireAdmin },
+    async (req, reply) => {
+      const parsed = epaySettingsSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({
+          ok: false,
+          error: parsed.error.issues.map((i) => i.message).join('; '),
+        });
+      }
+      const d = parsed.data;
+      const existing = loadEpaySettings();
+      const gateway = normalizeEpayGateway(d.gateway || existing?.gateway || '');
+      const pid = (d.pid || '').trim() || existing?.pid || '';
+      const key = (d.key || '').trim() || existing?.key || '';
+      const channels = normalizeEpayChannels(d.channels);
+      if (d.enabled) {
+        if (!gateway || !isSafeEpayGatewayUrl(gateway)) {
+          return reply.code(400).send({
+            ok: false,
+            error:
+              '启用易支付时必须填写可公网访问的支付网关地址，不能使用内网、本机或非法协议',
+          });
+        }
+        if (!/^[A-Za-z0-9_\-]{1,64}$/.test(pid)) {
+          return reply.code(400).send({ ok: false, error: '请填写有效的商户ID' });
+        }
+        if (!key) {
+          return reply.code(400).send({ ok: false, error: '请填写商户密钥' });
+        }
+        if (!channels.length) {
+          return reply.code(400).send({ ok: false, error: '请至少开通一个收款渠道' });
+        }
+      } else if (gateway && !isSafeEpayGatewayUrl(gateway)) {
+        return reply.code(400).send({
+          ok: false,
+          error: '支付网关地址不合法，不能使用内网、本机或非法协议',
+        });
+      }
+      saveEpaySettings({
+        enabled: d.enabled,
+        gateway,
+        pid,
+        key: (d.key || '').trim(),
+        channels,
+      });
+      logAudit({
+        actor: req.adminUsername || 'admin',
+        action: 'settings.epay.update',
+        detail: {
+          enabled: d.enabled,
+          gateway,
+          pid,
+          channels,
+        },
+        ip: clientIp(req),
+      });
+      const check = d.enabled
+        ? validateEpayConfig()
+        : { ok: true as const };
+      return {
+        ok: true,
+        configured: epayConfigured(),
+        valid: check.ok,
+        warning: check.ok ? undefined : check.error,
+      };
+    },
+  );
+
+  app.post(
+    '/api/admin/settings/epay/check',
+    { preHandler: requireAdmin },
+    async (_req, reply) => {
+      const check = validateEpayConfig();
+      if (!check.ok) {
+        return reply
+          .code(400)
+          .send({ ok: false, error: check.error || '配置校验失败' });
+      }
+      return { ok: true, message: '配置校验通过，网关地址、商户ID和开通渠道格式正确' };
+    },
+  );
+
   app.get(
     '/api/admin/status',
     { preHandler: requireAdmin },
     async () => ({
       ok: true,
-      configured: settingsConfigured(),
+      configured: paymentConfigured(),
+      alipayConfigured: settingsConfigured(),
+      epayConfigured: epayConfigured(),
       gateway: loadAlipaySettings()?.gateway ?? config.gateway,
       notifyUrl: loadAlipaySettings()?.notifyUrl ?? config.notifyUrl,
     }),
@@ -532,7 +650,9 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       return {
         ok: true,
         stats,
-        configured: settingsConfigured(),
+        configured: paymentConfigured(),
+        alipayConfigured: settingsConfigured(),
+        epayConfigured: epayConfigured(),
       };
     },
   );

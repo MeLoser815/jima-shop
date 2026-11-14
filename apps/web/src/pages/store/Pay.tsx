@@ -5,6 +5,7 @@ import {
   Button,
   Card,
   Input,
+  Radio,
   Result,
   Space,
   Spin,
@@ -21,8 +22,13 @@ type PayOrder = {
   totalAmount: string;
   subject: string;
   qrCode: string | null;
+  payUrl?: string;
+  payScheme?: string;
+  payMethod?: string;
   status: string;
 };
+
+type PayMethod = { id: string; label: string };
 
 const HTTP_PAY_HINT =
   '当前不是通过 HTTPS 域名访问。请改用店铺的 HTTPS 地址打开后再支付，否则可能无法生成收款码。';
@@ -45,6 +51,26 @@ function errorText(err: unknown): string {
   return msg || '生成收款码失败，请稍后重试';
 }
 
+function scanHint(label?: string): string {
+  const name = label || '支付宝';
+  if (name === '微信') return '请使用微信扫描上方二维码。支付完成后页面会自动展示卡密。也可凭商户单号到「查单」查看。';
+  if (name === 'QQ钱包') return '请使用 QQ 钱包扫描上方二维码。支付完成后页面会自动展示卡密。也可凭商户单号到「查单」查看。';
+  return '请使用支付宝扫描上方二维码。支付完成后页面会自动展示卡密。也可凭商户单号到「查单」查看。';
+}
+
+function payTitle(label?: string): string {
+  const name = label || '支付宝';
+  if (name === '微信') return '微信扫码支付';
+  if (name === 'QQ钱包') return 'QQ钱包扫码支付';
+  return '支付宝扫码支付';
+}
+
+function startButtonLabel(methods: PayMethod[], selected?: string): string {
+  const current = methods.find((m) => m.id === selected) || methods[0];
+  const name = current?.label || '支付宝';
+  return `生成${name}收款码`;
+}
+
 export default function PayPage() {
   const cart = useCart();
   const nav = useNavigate();
@@ -58,14 +84,21 @@ export default function PayPage() {
   const [httpHint, setHttpHint] = useState(
     isInsecurePublicHttp() ? HTTP_PAY_HINT : '',
   );
-  const [alipayReady, setAlipayReady] = useState<boolean | null>(null);
+  const [methods, setMethods] = useState<PayMethod[] | null>(null);
+  const [selectedMethod, setSelectedMethod] = useState<string>('');
   const cleared = useRef(false);
 
   useEffect(() => {
     api
       .getStorePayment()
       .then((res) => {
-        setAlipayReady(res.alipayConfigured);
+        const list = res.methods?.length
+          ? res.methods
+          : res.alipayConfigured
+            ? [{ id: 'alipay_f2f', label: '支付宝' }]
+            : [];
+        setMethods(list);
+        setSelectedMethod((prev) => prev || list[0]?.id || '');
         if (res.insecureHttp && res.hint) setHttpHint(res.hint);
         else if (res.insecureHttp) setHttpHint(HTTP_PAY_HINT);
       })
@@ -102,6 +135,12 @@ export default function PayPage() {
       nav('/cart');
       return;
     }
+    const paymentMethod =
+      selectedMethod || (methods && methods.length === 1 ? methods[0].id : '');
+    if (methods && methods.length > 1 && !paymentMethod) {
+      message.warning('请选择支付方式');
+      return;
+    }
     setPayError('');
     setBusy(true);
     try {
@@ -111,19 +150,25 @@ export default function PayPage() {
           quantity: i.quantity,
         })),
         buyerNote: note.trim() || undefined,
+        paymentMethod: paymentMethod || undefined,
       });
       const qrCode = res.order?.qrCode?.trim() || '';
-      if (!qrCode) {
+      const payUrl = res.order?.payUrl?.trim() || '';
+      const payScheme = res.order?.payScheme?.trim() || '';
+      if (!qrCode && !payUrl && !payScheme) {
         throw new Error('未能生成收款码，请稍后重试或联系商家');
       }
       setOrder({
         outTradeNo: res.order.outTradeNo,
         totalAmount: res.order.totalAmount,
         subject: res.order.subject,
-        qrCode,
+        qrCode: qrCode || payUrl || payScheme,
+        payUrl: payUrl || undefined,
+        payScheme: payScheme || undefined,
+        payMethod: res.order.payMethod,
         status: res.order.status,
       });
-      message.success('已生成收款码，请使用支付宝扫码');
+      message.success(`已生成收款码，请使用${res.order.payMethod || '支付宝'}扫码`);
     } catch (e) {
       const text = errorText(e);
       setPayError(text);
@@ -166,7 +211,7 @@ export default function PayPage() {
     return (
       <Card className="glass-card pay-qr-card">
         <Typography.Title level={3} style={{ textAlign: 'center' }}>
-          支付宝扫码支付
+          {payTitle(order.payMethod)}
         </Typography.Title>
         <Typography.Paragraph type="secondary" style={{ textAlign: 'center' }}>
           {order.subject} · ¥{order.totalAmount}
@@ -180,14 +225,30 @@ export default function PayPage() {
           type="info"
           showIcon
           style={{ marginTop: 16 }}
-          message="请使用支付宝扫描上方二维码。支付完成后页面会自动展示卡密。也可凭商户单号到「查单」查看。"
+          message={scanHint(order.payMethod)}
         />
+        {(order.payUrl || order.payScheme) && (
+          <div style={{ textAlign: 'center', marginTop: 12 }}>
+            <Button
+              type="primary"
+              className="candy-btn"
+              href={order.payUrl || order.payScheme}
+              target="_blank"
+              rel="noreferrer"
+            >
+              打开支付页
+            </Button>
+          </div>
+        )}
         <div style={{ textAlign: 'center', marginTop: 12 }}>
           <Link to={`/order?no=${encodeURIComponent(order.outTradeNo)}`}>打开查单</Link>
         </div>
       </Card>
     );
   }
+
+  const ready = methods === null ? null : methods.length > 0;
+  const showChooser = (methods?.length ?? 0) > 1;
 
   return (
     <Card className="glass-card">
@@ -225,12 +286,26 @@ export default function PayPage() {
             value={note}
             onChange={(e) => setNote(e.target.value)}
           />
-          {alipayReady === false && (
+          {ready === false && (
             <Alert
               type="warning"
               showIcon
               message="商家暂未开通在线支付，请稍后再试或联系商家"
             />
+          )}
+          {showChooser && methods && (
+            <div>
+              <Typography.Text style={{ display: 'block', marginBottom: 8 }}>
+                选择支付方式
+              </Typography.Text>
+              <Radio.Group
+                value={selectedMethod}
+                onChange={(e) => setSelectedMethod(e.target.value)}
+                optionType="button"
+                buttonStyle="solid"
+                options={methods.map((m) => ({ value: m.id, label: m.label }))}
+              />
+            </div>
           )}
           {httpHint && (
             <Alert type="warning" showIcon message={httpHint} />
@@ -238,8 +313,16 @@ export default function PayPage() {
           {payError && (
             <Alert type="error" showIcon message={payError} />
           )}
-          {!httpHint && alipayReady !== false && !payError && (
-            <Alert type="info" showIcon message="请使用支付宝扫码完成支付。点击下方按钮生成收款码。" />
+          {!httpHint && ready !== false && !payError && (
+            <Alert
+              type="info"
+              showIcon
+              message={
+                showChooser
+                  ? '请选择支付方式并生成收款码，使用对应应用扫码完成付款。'
+                  : `请使用${methods?.[0]?.label || '支付宝'}扫码完成支付。点击下方按钮生成收款码。`
+              }
+            />
           )}
           <Button
             type="primary"
@@ -247,9 +330,12 @@ export default function PayPage() {
             block
             className="candy-btn"
             loading={busy}
+            disabled={ready === false}
             onClick={() => void startPay()}
           >
-            生成支付宝收款码
+            {methods && methods.length
+              ? startButtonLabel(methods, selectedMethod)
+              : '生成支付宝收款码'}
           </Button>
         </Space>
       )}

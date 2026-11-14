@@ -46,8 +46,8 @@ export default function Dashboard() {
       {!configured && (
         <Card className="glass-card" style={{ marginBottom: 16 }}>
           <Tag color="orange">待配置</Tag>
-          尚未配置支付宝当面付密钥，
-          <Link to={adminPath('settings')}>去填写 AppId / 私钥 / 公钥 →</Link>
+          尚未配置收款方式，
+          <Link to={adminPath('settings')}>去设置支付宝当面付或可选的易支付收款 →</Link>
         </Card>
       )}
       {pending > 0 && (
